@@ -189,20 +189,69 @@ chrome.runtime.onInstalled.addListener(async (details) => {
         await setDefaultOptions(); 
 
         // Standard context menus
-        chrome.contextMenus.create({"id": "whitelistDomain", "title": chrome.i18n.getMessage("whitelistdomain"), "contexts": ['action','page'], "onclick": async function(info, tab){
-            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+        // Note: onclick handlers are removed and logic moved to chrome.contextMenus.onClicked
+        chrome.contextMenus.create({
+            "id": "whitelistDomain", 
+            "title": chrome.i18n.getMessage("whitelistdomain"), 
+            "contexts": ['action','page']
+        });
+        chrome.contextMenus.create({
+            "id": "blacklistDomain", 
+            "title": chrome.i18n.getMessage("blacklistdomain"), 
+            "contexts": ['action','page']
+        });
+        chrome.contextMenus.create({
+            "id": "removeDomainFromList", // Updated ID
+            "title": chrome.i18n.getMessage("removelist"), 
+            "contexts": ['action','page']
+        });
+        
+        // Conditional context menu from original dpContext logic
+        const { showContext } = await chrome.storage.local.get("showContext");
+        if (showContext == 'true') { 
+            chrome.contextMenus.create({
+                "id": "openLinkCloaked", // Updated ID
+                "title": chrome.i18n.getMessage("opensafely"), 
+                "contexts": ['link', 'image']
+                // onclick handler removed
+            }); 
+        }
+        // Note on dynamic menu updates: If showContext can change, a chrome.storage.onChanged listener 
+        // would be needed to add/remove the "openLinkCloaked" menu item dynamically.
+        // For now, it's set on install/update.
+    }
+    // On update, existing menus with the same ID are updated automatically.
+    // If IDs were to change or menus deprecated, explicit removal would be needed.
+});
+
+// Centralized context menu click handler
+chrome.contextMenus.onClicked.addListener(async function(info, tab) {
+    if (!tab || !tab.url) { // Basic guard for tab and tab.url
+        console.warn("Context menu clicked without a valid tab object or URL.", info, tab);
+        // For 'openLinkCloaked', tab might be undefined if clicked from a different extension context,
+        // but info.linkUrl or info.srcUrl should be present.
+        if (info.menuItemId !== "openLinkCloaked") {
+            return;
+        }
+    }
+
+    // Ensure URL check for domain-specific actions
+    if (info.menuItemId !== "openLinkCloaked" && tab.url.substring(0, 4) != 'http') {
+        return;
+    }
+
+    switch (info.menuItemId) {
+        case "whitelistDomain":
             await domainHandler(extractDomainFromURL(tab.url), 0);
-            const { enable } = await chrome.storage.local.get("enable");
-            if (enable == "true") await magician('false', tab.id); 
-        }});
-        chrome.contextMenus.create({"id": "blacklistDomain", "title": chrome.i18n.getMessage("blacklistdomain"), "contexts": ['action','page'], "onclick": async function(info, tab){
-            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+            const { enable: enableWhitelist } = await chrome.storage.local.get("enable");
+            if (enableWhitelist == "true") await magician('false', tab.id); 
+            break;
+        case "blacklistDomain":
             await domainHandler(extractDomainFromURL(tab.url), 1);
-            const { enable } = await chrome.storage.local.get("enable");
-            if (enable == "true") await magician('true', tab.id);
-        }});
-        chrome.contextMenus.create({"id": "removeListDomain", "title": chrome.i18n.getMessage("removelist"), "contexts": ['action','page'], "onclick": async function(info, tab){ 
-            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+            const { enable: enableBlacklist } = await chrome.storage.local.get("enable");
+            if (enableBlacklist == "true") await magician('true', tab.id);
+            break;
+        case "removeDomainFromList":
             await domainHandler(extractDomainFromURL(tab.url), 2); 
             const settings = await chrome.storage.local.get(["enable", "newPages", "global"]);
             if (settings.enable == "true")  {
@@ -210,25 +259,18 @@ chrome.runtime.onInstalled.addListener(async (details) => {
                 if (settings.newPages == 'Cloak' || settings.global == 'true') flag = 'true';
                 await magician(flag, tab.id); 
             }
-        }});
-        
-        // Conditional context menu from original dpContext logic
-        const { showContext } = await chrome.storage.local.get("showContext");
-        if (showContext == 'true') { 
-            chrome.contextMenus.create({"id": "openSafely", "title": chrome.i18n.getMessage("opensafely"), "contexts": ['link', 'image'], "onclick": newCloak}); 
-        }
-        // Note: If showContext can change, a chrome.storage.onChanged listener would be needed to add/remove this menu item dynamically.
-        // For now, it's set on install/update based on the setting at that time.
+            break;
+        case "openLinkCloaked":
+            // The newCloak function needs `info` (for link/src URL) and potentially `tab` (for context, though less critical for just opening a new tab)
+            // `tab` here is the tab where the context menu was clicked, not the new tab being opened.
+            await newCloak(info, tab); // Pass original info and tab
+            break;
     }
-    // On update, it's good practice to remove old context menus if their IDs/definitions changed.
-    // chrome.contextMenus.removeAll might be too broad if other extensions use context menus.
-    // Selective removal by ID before re-creation is safer if IDs might change or menus are deprecated.
-    // For this refactoring, we assume IDs are stable or new menus are additive.
-    // For now, we assume IDs are stable or new ones are added.
 });
 
-// Called by clicking on the context menu item
-async function newCloak(info, tab) { // Made async
+
+// Called by newCloak, which is now triggered from chrome.contextMenus.onClicked
+async function newCloak(info, tab) { // `tab` is the originating tab, `info` contains linkUrl/srcUrl
 	// Enable cloaking (in case its been disabled) and open the link in a new tab
 	await chrome.storage.local.set({"enable": "true"});
     const settings = await chrome.storage.local.get("global"); // For recursiveCloak
@@ -379,20 +421,33 @@ async function magician(enable, tabId) { // Made async
             console.error("Magician (enable false): Generic error for tab:", tabId, e.message);
         }
     }
-    const settings = await chrome.storage.local.get("showIcon"); // This was already here, good.
+    const settings = await chrome.storage.local.get("showIcon");
+    console.log("[magician] dpicon value:", dpicon, "dptitle value:", dptitle, "tabId:", tabId, "enable:", enable);
+
 	if (settings.showIcon == 'true') {
-		if (enable == 'true') chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabId});
-		else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabId});
-		chrome.action.setTitle({title: dptitle, tabId: tabId});
-		// chrome.action.show(tabId); // V3: use chrome.action.enable(tabId)
+        if (typeof dpicon !== 'string' || !dpicon) {
+            console.warn("[magician] dpicon is not valid (undefined or empty). Skipping setIcon. Value:", dpicon);
+            // Optionally set a default fallback icon if dpicon is not ready
+            // chrome.action.setIcon({path: "img/icon16.png", tabId: tabId}); 
+        } else {
+            let iconPath = "img/addressicon/"+dpicon+(enable == 'true' ? ".png" : "-disabled.png");
+            console.log("[magician] Attempting to set icon path:", iconPath);
+            try {
+                chrome.action.setIcon({path: iconPath, tabId: tabId});
+            } catch (e) {
+                console.error("[magician] Error in setIcon:", e, "Path:", iconPath, "Tab ID:", tabId);
+            }
+        }
+        // Set title regardless of icon success, if dptitle is valid
+        if (typeof dptitle === 'string') {
+            chrome.action.setTitle({title: dptitle, tabId: tabId});
+        } else {
+            console.warn("[magician] dptitle is not valid. Skipping setTitle. Value:", dptitle);
+        }
         if (tabId) chrome.action.enable(tabId);
 	} else {
-        // chrome.action.hide(tabId); // V3: use chrome.action.disable(tabId) and optionally clear icon/title
         if (tabId) {
             chrome.action.disable(tabId);
-            // Optionally set a blank icon or a specific "hidden" icon
-            // chrome.action.setIcon({path: "img/empty.png", tabId: tabId}); 
-            // chrome.action.setTitle({title: "", tabId: tabId});
         }
     }
 }
@@ -440,14 +495,18 @@ async function setDPIcon() { // Made async
 				else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tab.id});
 				chrome.action.setTitle({title: dptitle, tabId: tab.id});
 				if (settings.showIcon == 'true') {
-                    // chrome.action.show(tab.id); // V3: use chrome.action.enable(tab.id)
+                    if (typeof dpicon === 'string' && dpicon) { // Guard for dpicon
+                        if (cloakedTabs.indexOf(tab.windowId+"|"+tab.id) != -1) chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tab.id});
+                        else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tab.id});
+                    } else {
+                        console.warn("[setDPIcon loop] dpicon not valid, skipping setIcon. Value:", dpicon);
+                    }
+                    if (typeof dptitle === 'string') { // Guard for dptitle
+                        chrome.action.setTitle({title: dptitle, tabId: tab.id});
+                    }
                     chrome.action.enable(tab.id);
                 } else {
-                    // chrome.action.hide(tab.id); // V3: use chrome.action.disable(tab.id)
                     chrome.action.disable(tab.id);
-                    // Optionally clear icon/title
-                    // chrome.action.setIcon({path: "img/empty.png", tabId: tab.id});
-                    // chrome.action.setTitle({title: "", tabId: tab.id});
                 }
 			});
 		});
@@ -475,16 +534,19 @@ chrome.tabs.onUpdated.addListener(async function(tabid, changeinfo, tab) { // Ma
         const { showIcon: currentShowIcon } = await chrome.storage.local.get("showIcon"); 
 
 		if (currentShowIcon == "true") {
-            // dpicon, dptitle are global and should be loaded by setDPIcon at startup
-			if (current_enable_status == "true") chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabid});
-			else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabid});
-			chrome.action.setTitle({title: dptitle, tabId: tabid});
+            if (typeof dpicon === 'string' && dpicon) { // Guard for dpicon
+                if (current_enable_status == "true") chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabid});
+                else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabid});
+            } else {
+                 console.warn("[onUpdated] dpicon not valid, skipping setIcon. Value:", dpicon);
+            }
+            if (typeof dptitle === 'string') { // Guard for dptitle
+                chrome.action.setTitle({title: dptitle, tabId: tabid});
+            }
             try { chrome.action.enable(tabid); } catch(e) { console.warn("Failed to enable action for tab", tabid, e.message); }
 		} else {
             try { 
                 chrome.action.disable(tabid);
-                // chrome.action.setIcon({path: "img/empty.png", tabId: tabid}); // Optional: set blank icon
-                // chrome.action.setTitle({title: "", tabId: tabid});           // Optional: set blank title
             } catch(e) { console.warn("Failed to disable action for tab", tabid, e.message); }
         }
 		if (checkChrome(tab.url)) return;
@@ -492,7 +554,7 @@ chrome.tabs.onUpdated.addListener(async function(tabid, changeinfo, tab) { // Ma
         const storeSettings = await chrome.storage.local.get(["global", "enable", "enableStickiness"]);
 
 		if (current_enable_status == "true") {
-			await magician('true', tabid); 
+			await magician('true', tabid); // magician itself handles dpicon checks now
 			if (storeSettings.global == "false" && storeSettings.enable == "false") await chrome.storage.local.set({enable: "true"});
 			if (dpcloakindex == -1) cloakedTabs.push(dpTabId);
 			if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
