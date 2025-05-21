@@ -7,59 +7,79 @@ var version = (function () {
 	xhr.send(null);
 	return JSON.parse(xhr.responseText).version;
 }());
-var bkg = chrome.extension.getBackgroundPage();
+// var bkg = chrome.extension.getBackgroundPage(); // Removed for MV3
 var error = false;
-var oldglobalstate = false;
-var settingnames = [];
-document.addEventListener('DOMContentLoaded', function () {
+// var oldglobalstate = false; // Will be fetched from storage
+var settingnames = []; // Used for export/import, will need to adapt
+
+async function loadStorage(keys) {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(keys, (result) => {
+            resolve(result);
+        });
+    });
+}
+
+async function saveStorage(items) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set(items, () => {
+            resolve();
+        });
+    });
+}
+
+document.addEventListener('DOMContentLoaded', async function () { // Made async
 	$("#tabs").tabs();
-	$("#o1").slider({min: 0, max: 1, step: 0.05, slide: function(event, ui) { $("#opacity1").val(ui.value); opacitytest(); }, stop: function(event, ui) { 
+	$("#o1").slider({min: 0, max: 1, step: 0.05, slide: function(event, ui) { $("#opacity1").val(ui.value); opacitytest(); }, stop: async function(event, ui) { // made async
 		if (ui.value == 0) $("#collapseimageblock").show();
 		else $("#collapseimageblock").hide();
-		saveOptions();
+		await saveOptions();
 	}});
-	$("#o2").slider({min: 0, max: 1, step: 0.05, slide: function(event, ui) { $("#opacity2").val(ui.value); opacitytest(); }, stop: function(event, ui) { saveOptions(); }});
-	loadOptions();
+	$("#o2").slider({min: 0, max: 1, step: 0.05, slide: function(event, ui) { $("#opacity2").val(ui.value); opacitytest(); }, stop: async function(event, ui) { await saveOptions(); }}); // made async
+	await loadOptions(); // Made async
+	// colorPickLoad might need to be called after values are loaded if it depends on them.
+	// Assuming colorPickLoad itself doesn't depend on initial storage values directly for setup.
 	colorPickLoad("s_bg");
 	colorPickLoad("s_text");
 	colorPickLoad("s_link");
 	colorPickLoad("s_table");
-	$(".i18_save, .i18_savecolours").click(saveOptions);
-	$(".i18_revertcolours").click(revertColours);
-	$(".i18_addwhitelist").click(function() { addList(0); });
-	$(".i18_addblacklist").click(function() { addList(1); });
+	$(".i18_save, .i18_savecolours").click(async function() { await saveOptions(); }); // made async
+	$(".i18_revertcolours").click(revertColours); // revertColours will need async storage access
+	$(".i18_addwhitelist").click(async function() { await addList(0); }); // made async
+	$(".i18_addblacklist").click(async function() { await addList(1); }); // made async
 	$(".i18_dpoptions").click(function() { location.href='options.html'; });
-	$(".i18_clear").click(function() {
+	$(".i18_clear").click(async function() { // made async
 		if ($(this).parent().find('strong').hasClass('i18_whitelist')) {
-			listclear(0);
+			await listclear(0);
 		} else {
-			listclear(1);
+			await listclear(1);
 		}
 	});
-	$("#enable, #enableToggle, #enableStickiness, #disableFavicons, #hidePageTitles, #showUnderline, #collapseimage, #removeBold, #showContext, #showIcon, #showUpdateNotifications").click(saveOptions);
-	$("#iconTitle, #customcss").blur(saveOptions);
-	$("#s_bg, #s_text, #s_link, #s_table").keyup(updateDemo);
-	$("#global").click(function() {
-		saveOptions();
+	$("#enable, #enableToggle, #enableStickiness, #disableFavicons, #hidePageTitles, #showUnderline, #collapseimage, #removeBold, #showContext, #showIcon, #showUpdateNotifications").click(async function() { await saveOptions(); }); // made async
+	$("#iconTitle, #customcss").blur(async function() { await saveOptions(); }); // made async
+	$("#s_bg, #s_text, #s_link, #s_table").keyup(updateDemo); // updateDemo reads from form, not storage directly
+	$("#global").click(async function() { // made async
+		await saveOptions();
 	});
-	$("#opacity1").blur(function() {
-		intValidate(this, 0.05);
+	$("#opacity1").blur(async function() { // made async
+		await intValidate(this, 0.05); // intValidate calls saveOptions
 		if (this.value == 0) $("#collapseimageblock").show();
 		else $("#collapseimageblock").hide();
 		opacitytest();
 	});
-	$("#opacity2").blur(function() {
-		intValidate(this, 0.5);
+	$("#opacity2").blur(async function() { // made async
+		await intValidate(this, 0.5); // intValidate calls saveOptions
 		opacitytest();
 	});
-	$("#maxwidth, #maxheight").blur(function() {
-		intValidate(this);
+	$("#maxwidth, #maxheight").blur(async function() { // made async
+		await intValidate(this); // intValidate calls saveOptions
 	});
-	$("#pageTitleText").blur(pageTitleValidation);
-	$("#font").change(function() {
+	$("#pageTitleText").blur(pageTitleValidation); // pageTitleValidation calls saveOptions
+	$("#font").change(async function() { // made async
 		//if ($(this).val() == '-Unchanged-') $("#fontsize").parent().parent().hide();
 		//else $("#fontsize").parent().parent().show();
-		updateDemo();
+		updateDemo(); // reads from form
+		// await saveOptions(); // Implicitly saved by other handlers or main save button
 	});
 	// Hotkey
 	var listener;
@@ -110,24 +130,26 @@ function keyhandle(keypressed) {
 		if (keypressed != $("#paranoidhotkey").val()) {
 			$("#hotkey").val(keypressed).attr('disabled', 'true');
 			$("#hotkeyrecord").val(chrome.i18n.getMessage("hotkey_record"));
-			saveOptions();
+			await saveOptions();
 		}
 	}
 }
-function loadCheckbox(id) {
-	document.getElementById(id).checked = typeof localStorage[id] == "undefined" ? false : localStorage[id] == "true";
+async function loadCheckbox(id, settings) {
+    const value = settings[id];
+	document.getElementById(id).checked = typeof value == "undefined" ? false : value == "true" || value === true;
 }
 
-function loadElement(id) {
-	$("#"+id).val(localStorage[id]);
+async function loadElement(id, settings, defaultValue = '') {
+    const value = settings[id];
+	$("#"+id).val(typeof value == "undefined" ? defaultValue : value);
 }
 
-function saveCheckbox(id) {
-	localStorage[id] = document.getElementById(id).checked;
+async function saveCheckbox(id, itemsToSave) {
+	itemsToSave[id] = document.getElementById(id).checked;
 }
 
-function saveElement(id) {
-	localStorage[id] = $("#"+id).val();
+async function saveElement(id, itemsToSave) {
+	itemsToSave[id] = $("#"+id).val();
 }
 function closeOptions() {
 	window.open('', '_self', '');window.close();
@@ -225,131 +247,161 @@ function i18load() {
 function loadOptions() {
 	document.title = chrome.i18n.getMessage("dpoptions");
 	i18load();
-	oldglobalstate = localStorage["global"];
-	loadCheckbox("enable");
-	loadCheckbox("global");
-	loadCheckbox("enableToggle");
-	loadElement("hotkey");
-	loadElement("paranoidhotkey");
+    // Define all keys to fetch for options
+    const optionKeys = [
+        "global", "enable", "enableToggle", "hotkey", "paranoidhotkey", "newPages", "sfwmode",
+        "opacity1", "opacity2", "collapseimage", "showIcon", "iconType", "iconTitle",
+        "disableFavicons", "hidePageTitles", "pageTitleText", "maxwidth", "maxheight",
+        "enableStickiness", "showContext", "showUnderline", "removeBold", "showUpdateNotifications",
+        "font", "customfont", "fontsize", "s_text", "s_bg", "s_table", "s_link", "customcss",
+        "whiteList", "blackList" // For listUpdate and updateExport
+    ];
+    const settings = await loadStorage(optionKeys);
+    const oldglobalstate = settings.global; // Store for later comparison
+
+	await loadCheckbox("enable", settings);
+	await loadCheckbox("global", settings);
+	await loadCheckbox("enableToggle", settings);
+	await loadElement("hotkey", settings, 'CTRL F12');
+	await loadElement("paranoidhotkey", settings, 'ALT P');
 	if ($("#hotkey").val()) $("#hotkey").val($("#hotkey").val().toUpperCase());
 	if ($("#paranoidhotkey").val()) $("#paranoidhotkey").val($("#paranoidhotkey").val().toUpperCase());
-	loadElement("newPages");
-	loadElement("sfwmode");
-	loadElement("opacity1");
-	loadElement("opacity2");
-	loadCheckbox("collapseimage");
-	loadCheckbox("showIcon");
-	loadElement("iconType");
-	loadElement("iconTitle");
-	loadCheckbox("disableFavicons");
-	loadCheckbox("hidePageTitles");
-	loadElement("pageTitleText");
-	loadElement("maxwidth");
-	loadElement("maxheight");
-	loadCheckbox("enableStickiness");
-	loadCheckbox("showContext");
-	loadCheckbox("showUnderline");
-	loadCheckbox("removeBold");
-	loadCheckbox("showUpdateNotifications");
-	loadElement("font");
-	loadElement("customfont");
-	loadElement("fontsize");
-	loadElement("s_text");
-	loadElement("s_bg");
-	loadElement("s_table");
-	loadElement("s_link");
-	if ($('#global').is(':checked')) $("#newPagesRow").css('display', 'none');
-	if ($('#showIcon').is(':checked')) $(".discreeticonrow").show();
-	if ($('#enableToggle').is(':checked')) $("#hotkeyrow, #paranoidhotkeyrow").show();
+	await loadElement("newPages", settings, 'Uncloak');
+	await loadElement("sfwmode", settings, 'SFW');
+	await loadElement("opacity1", settings, '0.05');
+	await loadElement("opacity2", settings, '0.5');
+	await loadCheckbox("collapseimage", settings);
+	await loadCheckbox("showIcon", settings);
+	await loadElement("iconType", settings, 'coffee');
+	await loadElement("iconTitle", settings, 'Decreased Productivity');
+	await loadCheckbox("disableFavicons", settings);
+	await loadCheckbox("hidePageTitles", settings);
+	await loadElement("pageTitleText", settings, 'Google Chrome');
+	await loadElement("maxwidth", settings, '0');
+	await loadElement("maxheight", settings, '0');
+	await loadCheckbox("enableStickiness", settings);
+	await loadCheckbox("showContext", settings);
+	await loadCheckbox("showUnderline", settings);
+	await loadCheckbox("removeBold", settings);
+	await loadCheckbox("showUpdateNotifications", settings);
+	await loadElement("font", settings, 'Arial');
+	await loadElement("customfont", settings, '');
+	await loadElement("fontsize", settings, '12');
+	await loadElement("s_text", settings, '000000');
+	await loadElement("s_bg", settings, 'FFFFFF');
+	await loadElement("s_table", settings, 'cccccc');
+	await loadElement("s_link", settings, '000099');
+	
+    // UI conditional visibility logic based on loaded settings
+	if ($('#global').is(':checked')) $("#newPagesRow").css('display', 'none'); else $("#newPagesRow").show();
+	if ($('#showIcon').is(':checked')) $(".discreeticonrow").show(); else $(".discreeticonrow").hide();
+	if ($('#enableToggle').is(':checked')) $("#hotkeyrow, #paranoidhotkeyrow").show(); else $("#hotkeyrow, #paranoidhotkeyrow").hide();
 	$("#sampleicon").attr('src', '../img/addressicon/'+$('#iconType').val()+'.png');
-	if (!$('#hidePageTitles').is(':checked')) $("#pageTitle").css('display', 'none');
-	if ($('#opacity1').val() == 0) $("#collapseimageblock").css('display', 'block');
-	if ($('#sfwmode').val() == 'SFW' || $('#sfwmode').val() == 'SFW1' || $('#sfwmode').val() == 'SFW2') $("#opacityrow").show();
+	if (!$('#hidePageTitles').is(':checked')) $("#pageTitle").css('display', 'none'); else $("#pageTitle").show();
+	if ($('#opacity1').val() == 0) $("#collapseimageblock").css('display', 'block'); else $("#collapseimageblock").hide();
+	if (['SFW', 'SFW1', 'SFW2'].includes($('#sfwmode').val())) $("#opacityrow").show(); else $("#opacityrow").hide();
 	if ($('#font').val() == '-Custom-') {
 		if ($("#customfont").val()) $("#customfontrow").show();
-		else {
-			$('#font').val('Arial');
+		else { // Fallback if custom font is selected but empty
+			$('#font').val('Arial'); 
 			$("#customfontrow").hide();
 		}
-	}
-	loadElement("customcss");
-	listUpdate();
-	opacitytest();
-	updateDemo();
+	} else $("#customfontrow").hide();
+	await loadElement("customcss", settings, '');
+	
+    await listUpdate(settings.whiteList, settings.blackList); // Pass lists to avoid re-reading
+	opacitytest(); // Reads from form, should be fine
+	updateDemo(); // Reads from form, should be fine
+    await updateExport(); // updateExport will need to be async and use settings
 }
 function isValidColor(hex) { 
-	var strPattern = /^[0-9a-f]{3,6}$/i; 
+	var strPattern = /^[0-9a-fA-F]{3,6}$/i; // Made case-insensitive for hex
 	return strPattern.test(hex); 
 }
 
-function saveOptions() {
-	updateDemo();
+async function saveOptions() {
+	updateDemo(); // Reads from form
+    let itemsToSave = {};
+    let currentError = false; // local error flag for this save operation
+
 	if (!$('#enable').is(':checked') && !$('#global').is(':checked')) {
-		$('#enable').prop('checked', true);
+		$('#enable').prop('checked', true); // Ensure enable is checked if global is not
 	}
-	if ($('#global').is(':checked')) $("#newPagesRow").css('display', 'none');
-	else $("#newPagesRow").css('display', 'block');
-	if ($('#enableToggle').is(':checked')) $("#hotkeyrow, #paranoidhotkeyrow").show();
-	else $("#hotkeyrow, #paranoidhotkeyrow").hide();
-	if ($('#hidePageTitles').is(':checked')) $("#pageTitle").css('display', 'block');
-	else $("#pageTitle").css('display', 'none');
-	if ($('#sfwmode').val() == 'SFW' || $('#sfwmode').val() == 'SFW1' || $('#sfwmode').val() == 'SFW2') $("#opacityrow").fadeIn("fast");
-	else $("#opacityrow").hide();
-	if ($('#font').val() == '-Custom-') $("#customfontrow").show();
-	else $("#customfontrow").hide();
+
+    // Update UI visibility based on current form values before saving
+	if ($('#global').is(':checked')) $("#newPagesRow").css('display', 'none'); else $("#newPagesRow").show();
+	if ($('#enableToggle').is(':checked')) $("#hotkeyrow, #paranoidhotkeyrow").show(); else $("#hotkeyrow, #paranoidhotkeyrow").hide();
+	if ($('#hidePageTitles').is(':checked')) $("#pageTitle").show(); else $("#pageTitle").hide();
+	if (['SFW', 'SFW1', 'SFW2'].includes($('#sfwmode').val())) $("#opacityrow").fadeIn("fast"); else $("#opacityrow").hide();
+	if ($('#font').val() == '-Custom-') $("#customfontrow").show(); else $("#customfontrow").hide();
+	
+    // Ensure hotkeys have values
 	if (!$("#hotkey").val()) $("#hotkey").val('CTRL F12');
 	if (!$("#paranoidhotkey").val()) $("#paranoidhotkey").val('ALT P');
-	saveCheckbox("enable");
-	saveCheckbox("global");
-	saveCheckbox("enableToggle");
-	saveElement("hotkey");
-	saveElement("paranoidhotkey");
-	saveElement("opacity1");
-	saveElement("opacity2");
-	saveCheckbox("collapseimage");
-	saveElement("newPages");
-	saveElement("sfwmode");
-	saveCheckbox("showIcon");
-	saveElement("iconType");
-	saveElement("iconTitle");
-	saveCheckbox("disableFavicons");
-	saveCheckbox("hidePageTitles");
-	saveElement("pageTitleText");
-	saveElement("maxwidth");
-	saveElement("maxheight");
-	saveCheckbox("enableStickiness");
-	saveCheckbox("showContext");
-	saveCheckbox("showUnderline");
-	saveCheckbox("removeBold");
-	saveCheckbox("showUpdateNotifications");
-	saveElement("font");
-	saveElement("customfont");
-	saveElement("fontsize");
-	if ($('#showIcon').is(':checked')) {
-		$(".discreeticonrow").show();
-		bkg.setDPIcon();
-	} else $(".discreeticonrow").hide();
+
+    // Collect all values to save
+	await saveCheckbox("enable", itemsToSave);
+	await saveCheckbox("global", itemsToSave);
+	await saveCheckbox("enableToggle", itemsToSave);
+	await saveElement("hotkey", itemsToSave);
+	await saveElement("paranoidhotkey", itemsToSave);
+	await saveElement("opacity1", itemsToSave);
+	await saveElement("opacity2", itemsToSave);
+	await saveCheckbox("collapseimage", itemsToSave);
+	await saveElement("newPages", itemsToSave);
+	await saveElement("sfwmode", itemsToSave);
+	await saveCheckbox("showIcon", itemsToSave);
+	await saveElement("iconType", itemsToSave);
+	await saveElement("iconTitle", itemsToSave);
+	await saveCheckbox("disableFavicons", itemsToSave);
+	await saveCheckbox("hidePageTitles", itemsToSave);
+	await saveElement("pageTitleText", itemsToSave);
+	await saveElement("maxwidth", itemsToSave);
+	await saveElement("maxheight", itemsToSave);
+	await saveCheckbox("enableStickiness", itemsToSave);
+	await saveCheckbox("showContext", itemsToSave);
+	await saveCheckbox("showUnderline", itemsToSave);
+	await saveCheckbox("removeBold", itemsToSave);
+	await saveCheckbox("showUpdateNotifications", itemsToSave);
+	await saveElement("font", itemsToSave);
+	await saveElement("customfont", itemsToSave);
+	await saveElement("fontsize", itemsToSave);
+
 	if (isValidColor($('#s_text').val()) && isValidColor($('#s_bg').val()) && isValidColor($('#s_table').val()) && isValidColor($('#s_link').val())) {
-		saveElement("s_text");
-		saveElement("s_bg");
-		saveElement("s_table");
-		saveElement("s_link");
+		await saveElement("s_text", itemsToSave);
+		await saveElement("s_bg", itemsToSave);
+		await saveElement("s_table", itemsToSave);
+		await saveElement("s_link", itemsToSave);
 	} else {
-		error = true;
+		currentError = true; // Use local error flag
 	}
-	$("#customcss").val($("#customcss").val().replace(/\s*<([^>]+)>\s*/ig, ""));
-	saveElement("customcss");
-	updateExport();
-	// Apply new settings
-	bkg.optionsSaveTrigger(oldglobalstate, localStorage["global"]);
-	bkg.hotkeyChange();
-	oldglobalstate = localStorage["global"];
-	// Remove any existing styling
-	if (!error) notification(chrome.i18n.getMessage("saved"));
+	$("#customcss").val($("#customcss").val().replace(/\s*<([^>]+)>\s*/ig, "")); // Sanitize
+	await saveElement("customcss", itemsToSave);
+
+    // Fetch old global state for optionsSaveTrigger
+    const { global: oldGlobalStateValue } = await loadStorage("global");
+
+    // Save all collected items
+    await saveStorage(itemsToSave);
+    await updateExport(); // Update the export text area
+
+	// Notify background script of changes
+    // These messages will need to be handled in background.js
+    if (itemsToSave.showIcon !== undefined || itemsToSave.iconType !== undefined || itemsToSave.iconTitle !== undefined) {
+        chrome.runtime.sendMessage({ action: "setDPIcon" });
+    }
+    if (itemsToSave.hotkey !== undefined || itemsToSave.paranoidhotkey !== undefined || itemsToSave.enableToggle !== undefined) {
+        chrome.runtime.sendMessage({ action: "hotkeyChange" });
+    }
+    // Generic trigger for other options, passing old and new global state
+    chrome.runtime.sendMessage({ action: "optionsSaveTrigger", oldGlobalValue: oldGlobalStateValue, newGlobalValue: itemsToSave.global });
+
+
+	if (!currentError) notification(chrome.i18n.getMessage("saved"));
 	else notification(chrome.i18n.getMessage("invalidcolour"));
 }
 
-function opacitytest() {
+async function opacitytest() { // Made async as it calls saveOptions indirectly via slider stop
 	$("#o1").slider("option", "value", $("#opacity1").val());
 	$("#o2").slider("option", "value", $("#opacity2").val());
 	$(".sampleimage").css({"opacity": $("#opacity1").val()});
@@ -363,37 +415,41 @@ function opacitytest() {
 	);
 }	
 
-function intValidate(elm, val) {
+async function intValidate(elm, val) { // Made async
 	if (!is_int(elm.value)) {
 		notification(chrome.i18n.getMessage("invalidnumber"));
-		elm.value = val;
+		elm.value = val; // Set to default if invalid
+        // Do not call saveOptions here if just validating, let main save button handle it
+        // or if it's a blur event, the blur handler itself calls saveOptions.
 	}
-	else saveOptions();
+	// else await saveOptions(); // Avoid saving on every int validation if not desired.
+    // Let blur/change handlers for these fields call saveOptions.
 }
 
 function is_int(value){ 
-	if(value != '' && !isNaN(value)) return true;
+	if(value != '' && !isNaN(value) && Number.isInteger(parseFloat(value))) return true; // Check if actually integer
 	else return false;
 }	
 
-function pageTitleValidation() {
+async function pageTitleValidation() { // Made async
 	if ($.trim($("#pageTitleText").val()) == '') $("#pageTitleText").val('Google Chrome');
-	else saveOptions();
+	// else await saveOptions(); // Avoid saving on every validation. Let blur handler call save.
 }
 
-function fontsizeValidation() {
+async function fontsizeValidation() { // Made async
 	if (!is_int($.trim($("#fontsize").val()))) $("#fontsize").val('12');
-	updateDemo();
+	updateDemo(); // Reads from form
+    // await saveOptions(); // Avoid saving on every validation. Let change handler call save.
 }
 
 function notification(msg) {
-	$('#message').html(msg).stop().fadeIn("slow").delay(2000).fadeOut("slow")
+	$('#message').html(msg).stop(true, true).fadeIn("slow").delay(2000).fadeOut("slow"); // Added stop(true,true) for better animation queue handling
 }
 function truncText(str) {
 	if (str.length > 16) return str.substr(0, 16)+'...';
 	return str;
 }
-function updateDemo() {
+function updateDemo() { // This function reads directly from form elements, doesn't need to be async itself
 	if ($('#disableFavicons').is(':checked')) $("#demo_favicon").attr('style','visibility: hidden');
 	else $("#demo_favicon").removeAttr('style');
 	if ($('#hidePageTitles').is(':checked')) $("#demo_title").text(truncText($("#pageTitleText").val()));	
@@ -484,67 +540,81 @@ function stylePreset(s) {
 }
 
 // <!-- modified from KB SSL Enforcer: https://code.google.com/p/kbsslenforcer/
-function addList(type) {
+async function addList(type) { // Made async
 	var domain = $('#url').val();
 	domain = domain.toLowerCase();
 	
 	if (!domain.match(/^(?:[\-\w\*\?]+(\.[\-\w\*\?]+)*|((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[0-9]{1,2})\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[0-9]{1,2})|\[[A-Fa-f0-9:.]+\])?$/g)) {
-		$('#listMsg').html(chrome.i18n.getMessage("invaliddomain")).stop().fadeIn("slow").delay(2000).fadeOut("slow");
+		$('#listMsg').html(chrome.i18n.getMessage("invaliddomain")).stop(true,true).fadeIn("slow").delay(2000).fadeOut("slow");
 	} else {
-		bkg.domainHandler(domain, type);
+        // bkg.domainHandler(domain, type); // Replaced with message
+        await chrome.runtime.sendMessage({ action: "domainHandler", domain: domain, listType: type });
 		$('#url').val('');
-		$('#listMsg').html([chrome.i18n.getMessage("whitelisted"),chrome.i18n.getMessage("blacklisted")][type]+' '+domain+'.').stop().fadeIn("slow").delay(2000).fadeOut("slow");
-		listUpdate();
+		$('#listMsg').html([chrome.i18n.getMessage("whitelisted"),chrome.i18n.getMessage("blacklisted")][type]+' '+domain+'.').stop(true,true).fadeIn("slow").delay(2000).fadeOut("slow");
+		await listUpdate(); // listUpdate will fetch lists from storage
 		$('#url').focus();
 	}
 	return false;
 }
-function domainRemover(domain) {
-	bkg.domainHandler(domain,2);
-	listUpdate();
+async function domainRemover(domain) { // Made async
+    // bkg.domainHandler(domain,2); // Replaced with message
+    await chrome.runtime.sendMessage({ action: "domainHandler", domain: domain, listType: 2 });
+	await listUpdate(); // listUpdate will fetch lists from storage
 	return false;
 }
-function listUpdate() {
-	var whiteList = JSON.parse(localStorage['whiteList']);
-	var blackList = JSON.parse(localStorage['blackList']);
+async function listUpdate(storedWhiteList, storedBlackList) { // Made async, optionally accepts lists
+    let whiteListArray, blackListArray;
+
+    if (storedWhiteList && storedBlackList) {
+        try { whiteListArray = JSON.parse(storedWhiteList || '[]'); } catch (e) { whiteListArray = []; console.error("Error parsing whitelist for listUpdate", e); }
+        try { blackListArray = JSON.parse(storedBlackList || '[]'); } catch (e) { blackListArray = []; console.error("Error parsing blacklist for listUpdate", e); }
+    } else {
+        const { whiteList, blackList } = await loadStorage(['whiteList', 'blackList']);
+        try { whiteListArray = JSON.parse(whiteList || '[]'); } catch (e) { whiteListArray = []; console.error("Error parsing whitelist for listUpdate", e); }
+        try { blackListArray = JSON.parse(blackList || '[]'); } catch (e) { blackListArray = []; console.error("Error parsing blacklist for listUpdate", e); }
+    }
 	
 	var whitelistCompiled = '';
-	if(whiteList.length==0) whitelistCompiled = '['+chrome.i18n.getMessage("empty")+']';
+	if(whiteListArray.length==0) whitelistCompiled = '['+chrome.i18n.getMessage("empty")+']';
 	else {
-		whiteList.sort();
-		for(i in whiteList) whitelistCompiled += '<div class="listentry">'+whiteList[i]+' <a href="javascript:;" style="color:#f00;float:right;" rel="'+whiteList[i]+'" class="domainRemover">X</a></div>';
+		whiteListArray.sort();
+		for(var i in whiteListArray) whitelistCompiled += '<div class="listentry">'+whiteListArray[i]+' <a href="javascript:;" style="color:#f00;float:right;" rel="'+whiteListArray[i]+'" class="domainRemover">X</a></div>';
 	}
 	var blacklistCompiled = '';
-	if (blackList.length==0) blacklistCompiled = '['+chrome.i18n.getMessage("empty")+']';
+	if (blackListArray.length==0) blacklistCompiled = '['+chrome.i18n.getMessage("empty")+']';
 	else {
-		blackList.sort();
-		for(i in blackList) blacklistCompiled += '<div class="listentry">'+blackList[i]+' <a href="javascript:;" style="color:#f00;float:right;" rel="'+blackList[i]+'" class="domainRemover">X</a></div>';
+		blackListArray.sort();
+		for(var i in blackListArray) blacklistCompiled += '<div class="listentry">'+blackListArray[i]+' <a href="javascript:;" style="color:#f00;float:right;" rel="'+blackListArray[i]+'" class="domainRemover">X</a></div>';
 	}
 	$('#whitelist').html(whitelistCompiled);
 	$('#blacklist').html(blacklistCompiled);
 	$(".domainRemover").unbind('click');
-	$(".domainRemover").click(function() { domainRemover($(this).attr('rel'));});
-	bkg.initLists();
-	updateExport();
+	$(".domainRemover").click(async function() { await domainRemover($(this).attr('rel'));}); // Made async
+    // bkg.initLists(); // Replaced with message if background needs to re-init its global lists
+    chrome.runtime.sendMessage({ action: "initLists" }); // Tell background to refresh its internal lists
+	await updateExport(); // updateExport will need to be async
 }
-function listclear(type) {
+async function listclear(type) { // Made async
 	if (confirm([chrome.i18n.getMessage("removefromwhitelist"),chrome.i18n.getMessage("removefromblacklist")][type]+'?')) {
-		localStorage[['whiteList','blackList'][type]] = JSON.stringify([]);
-		listUpdate();
+        const key = (type === 0) ? 'whiteList' : 'blackList';
+		await saveStorage({ [key]: JSON.stringify([]) });
+		await listUpdate();
 	}
 	return false;
 }
 // from KB SSL Enforcer: https://code.google.com/p/kbsslenforcer/ -->
 
-function revertColours(s) {
-	$('#s_bg').val(localStorage['s_bg']);
-	$('#s_text').val(localStorage['s_text']);
-	$('#s_link').val(localStorage['s_link']);
-	$('#s_table').val(localStorage['s_table']);
+async function revertColours() { // Made async
+    const settings = await loadStorage(['s_bg', 's_text', 's_link', 's_table']);
+	$('#s_bg').val(settings.s_bg || 'FFFFFF');
+	$('#s_text').val(settings.s_text || '000000');
+	$('#s_link').val(settings.s_link || '000099');
+	$('#s_table').val(settings.s_table || 'cccccc');
 	updateDemo();
 }
 
-function colorPickLoad(id) {
+function colorPickLoad(id) { // This function itself doesn't need to be async if it only sets up the picker.
+                            // However, its callbacks might need to be async if they save options.
 	$('#'+id).ColorPicker({
 		onBeforeShow: function () {
 			$(this).ColorPickerSetColor(this.value);
@@ -567,49 +637,93 @@ function downloadtxt() {
 	downloadLink.click();
 	downloadLink.remove();
 }
-function updateExport() {
+async function updateExport() { // Made async
+    const allSettings = await loadStorage(null); // Get all settings
 	$("#settingsexport").val("");
-	settingnames = [];
-	for (var i in localStorage) {
-		if (localStorage.hasOwnProperty(i)) {
-			if (i != "version") {
-				settingnames.push(i);
-				$("#settingsexport").val($("#settingsexport").val()+i+"|"+localStorage[i].replace(/(?:\r\n|\r|\n)/g, ' ')+"\n");
+	settingnames = []; // Reset global settingnames
+	for (var key in allSettings) {
+		if (allSettings.hasOwnProperty(key)) {
+			if (key != "version") { // Assuming "version" is a special key not to be exported/imported by users this way
+				settingnames.push(key); // Populate settingnames for import validation
+                let value = allSettings[key];
+                if (typeof value === 'object') value = JSON.stringify(value); // Stringify objects/arrays like blackList/whiteList
+				$("#settingsexport").val($("#settingsexport").val()+key+"|"+String(value).replace(/(?:\r\n|\r|\n)/g, ' ')+"\n");
 			}
 		}
 	}
-	$("#settingsexport").val($("#settingsexport").val().slice(0,-1));
+    let currentExportVal = $("#settingsexport").val();
+    if (currentExportVal.endsWith("\n")) {
+	    $("#settingsexport").val(currentExportVal.slice(0,-1));
+    }
 }
-function settingsImport() {
-	var error = "";
-	var settings = $("#settingsimport").val().split("\n");
+async function settingsImport() { // Made async
+	var importError = ""; // Renamed to avoid conflict with global error
+	var settingsToImport = $("#settingsimport").val().split("\n");
 	if ($.trim($("#settingsimport").val()) == "") {
 		notification(chrome.i18n.getMessage("pastesettings"));
 		return false;
 	}
-	if (settings.length > 0) {
-		$.each(settings, function(i, v) {
+
+    // Populate settingnames if it's empty (e.g. if updateExport hasn't run or page just loaded)
+    if (settingnames.length === 0) {
+        const allStorage = await loadStorage(null);
+        for (const key in allStorage) {
+            if (allStorage.hasOwnProperty(key) && key !== "version") {
+                settingnames.push(key);
+            }
+        }
+    }
+    
+    let itemsToSave = {};
+
+	if (settingsToImport.length > 0) {
+		$.each(settingsToImport, function(i, v) {
 			if ($.trim(v) != "") {
 				var settingentry = $.trim(v).split("|");
-				if (settingnames.indexOf($.trim(settingentry[0])) != -1) {
-					if ($.trim(settingentry[0]) == 'whiteList' || $.trim(settingentry[0]) == 'blackList') {
-						var listarray = $.trim(settingentry[1]).replace(/(\[|\]|")/g,"").split(",");
-						if ($.trim(settingentry[0]) == 'whiteList' && listarray.toString() != '') localStorage['whiteList'] = JSON.stringify(listarray);
-						else if ($.trim(settingentry[0]) == 'blackList' && listarray.toString() != '') localStorage['blackList'] = JSON.stringify(listarray);
-					} else 
-						localStorage[$.trim(settingentry[0])] = $.trim(settingentry[1]);
+                var entryKey = $.trim(settingentry[0]);
+                var entryValue = $.trim(settingentry[1]);
+
+				if (settingnames.indexOf(entryKey) != -1) {
+                    // For boolean-like strings, convert them to actual booleans
+                    if (entryValue === "true") itemsToSave[entryKey] = true;
+                    else if (entryValue === "false") itemsToSave[entryKey] = false;
+                    // For lists, they should already be stringified JSON in the export, so keep as string for storage
+                    else if (entryKey === 'whiteList' || entryKey === 'blackList') {
+                        // Basic validation for JSON array format
+                        if (entryValue.startsWith('[') && entryValue.endsWith(']')) {
+                            itemsToSave[entryKey] = entryValue;
+                        } else {
+                            // Attempt to create a JSON array from comma-separated if not already an array string
+                            try {
+                                 const listarray = entryValue.replace(/(\[|\]|")/g,"").split(",");
+                                 if (listarray.toString() !== '') itemsToSave[entryKey] = JSON.stringify(listarray);
+                                 else itemsToSave[entryKey] = JSON.stringify([]);
+                            } catch (e) {
+                                console.warn(`Could not parse list for ${entryKey}, skipping: ${entryValue}`);
+                                importError += entryKey + "(invalid list format), ";
+                            }
+                        }
+                    } else {
+					    itemsToSave[entryKey] = entryValue;
+                    }
 				} else {
-					error += $.trim(settingentry[0])+", ";
+					importError += entryKey + "(unknown key), ";
 				}
 			}
 		});
 	}
-	loadOptions();
-	listUpdate();
-	if (!error) {
+
+    if (Object.keys(itemsToSave).length > 0) {
+	    await saveStorage(itemsToSave);
+    }
+
+	await loadOptions(); // Reload options from storage to reflect changes
+	// listUpdate is called by loadOptions implicitly if it loads whiteList/blackList
+	
+	if (!importError) {
 		notification(chrome.i18n.getMessage("importsuccessoptions"));
 		$("#settingsimport").val("");
 	} else {
-		notification(chrome.i18n.getMessage("importsuccesscond")+error.slice(0, -2));
+		notification(chrome.i18n.getMessage("importsuccesscond")+importError.slice(0, -2));
 	}
 }

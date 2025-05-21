@@ -3,24 +3,20 @@
 // Supporting functions by AdThwart - T. Joseph
 
 //'use strict'; - enable after testing
-var version = (function () {
-	var xhr = new XMLHttpRequest();
-	xhr.open('GET', chrome.extension.getURL('manifest.json'), false);
-	xhr.send(null);
-	return JSON.parse(xhr.responseText).version;
-}());
-var cloakedTabs = [];
-var uncloakedTabs = [];
-var contextLoaded = false;
-var dpicon, dptitle;
-var blackList, whiteList;
+var version = chrome.runtime.getManifest().version;
+var cloakedTabs = []; // Persisted via persistTabLists/loadTabLists
+var uncloakedTabs = []; // Persisted via persistTabLists/loadTabLists
+// var contextLoaded = false; // Removed, rely on onInstalled logic and menu item IDs
+var dpicon, dptitle; // Loaded async by setDPIcon
+var blackList, whiteList; // Loaded async by initLists
 
 // ----- Supporting Functions
 
-function enabled(tab, dpcloakindex) {
-	var dpdomaincheck = domainCheck(extractDomainFromURL(tab.url));
-	var dpcloakindex = dpcloakindex || cloakedTabs.indexOf(tab.windowId+"|"+tab.id);
-	if ((localStorage["enable"] == "true" || dpdomaincheck == '1') && dpdomaincheck != '0' && (localStorage["global"] == "true" || (localStorage["global"] == "false" && (dpcloakindex != -1 || localStorage["newPages"] == "Cloak" || dpdomaincheck == '1')))) return 'true';
+async function enabled(tab, dpcloakindex) { // Made async
+    const settings = await chrome.storage.local.get(["enable", "global", "newPages"]);
+	var dpdomaincheck = domainCheck(extractDomainFromURL(tab.url)); // domainCheck uses global lists, not storage directly
+	var dpcloakindex = dpcloakindex || cloakedTabs.indexOf(tab.windowId+"|"+tab.id); // cloakedTabs is global
+	if ((settings.enable == "true" || dpdomaincheck == '1') && dpdomaincheck != '0' && (settings.global == "true" || (settings.global == "false" && (dpcloakindex != -1 || settings.newPages == "Cloak" || dpdomaincheck == '1')))) return 'true';
 	return 'false';
 }
 function domainCheck(domain) {
@@ -79,13 +75,21 @@ function extractDomainFromURL(url) {
 	if (url.indexOf(":") > 0) url = url.substr(0, url.indexOf(":"));
 	return url;
 }
-function domainHandler(domain,action) {
-	// Initialize local storage
-	if (typeof(localStorage['whiteList'])=='undefined') localStorage['whiteList'] = JSON.stringify([]);
-	if (typeof(localStorage['blackList'])=='undefined') localStorage['blackList'] = JSON.stringify([]);
-	var tempWhitelist = JSON.parse(localStorage['whiteList']);
-	var tempBlacklist = JSON.parse(localStorage['blackList']);
-	
+async function domainHandler(domain,action) {
+    // Initialize local storage - This should ideally be handled by setDefaultOptions ensuring they exist.
+    // For safety, we can still check and default to empty arrays if not found, though it's less likely now.
+    let { whiteList: storedWhiteList, blackList: storedBlackList } = await chrome.storage.local.get(['whiteList', 'blackList']);
+
+    var tempWhitelist = [];
+    try {
+        tempWhitelist = JSON.parse(storedWhiteList || '[]');
+    } catch (e) { console.error("Error parsing whitelist in domainHandler", e); }
+
+    var tempBlacklist = [];
+    try {
+        tempBlacklist = JSON.parse(storedBlackList || '[]');
+    } catch (e) { console.error("Error parsing blacklist in domainHandler", e); }
+
 	// Remove domain from whitelist and blacklist
 	var pos = tempWhitelist.indexOf(domain);
 	if (pos>-1) tempWhitelist.splice(pos,1);
@@ -103,147 +107,217 @@ function domainHandler(domain,action) {
 			break;
 	}
 	
-	localStorage['blackList'] = JSON.stringify(tempBlacklist);
-	localStorage['whiteList'] = JSON.stringify(tempWhitelist);
-	blackList = tempBlacklist.sort();
-	whiteList = tempWhitelist.sort();
-	return false;
+    await chrome.storage.local.set({
+        'blackList': JSON.stringify(tempBlacklist),
+        'whiteList': JSON.stringify(tempWhitelist)
+    });
+
+	blackList = tempBlacklist.sort(); // Update global in-memory copy
+	whiteList = tempWhitelist.sort(); // Update global in-memory copy
+	return false; // Original function returned false, keeping for compatibility if anything relies on it.
 }
 // ----- Options
-function optionExists(opt) {
-	return (typeof localStorage[opt] != "undefined");
+async function optionExists(opt) {
+    const result = await chrome.storage.local.get(opt);
+	return (typeof result[opt] != "undefined");
 }
-function defaultOptionValue(opt, val) {
-	if (!optionExists(opt)) localStorage[opt] = val;
+async function defaultOptionValue(opt, val) {
+    if (!(await optionExists(opt))) await chrome.storage.local.set({ [opt]: val });
 }
-function setDefaultOptions() {
-	defaultOptionValue("version", version);
-	defaultOptionValue("enable", "true");
-	defaultOptionValue("enableToggle", "true");
-	defaultOptionValue("hotkey", "CTRL F12");
-	defaultOptionValue("paranoidhotkey", "ALT P");
-	defaultOptionValue("global", "false");
-	defaultOptionValue("newPages", "Uncloak");
-	defaultOptionValue("sfwmode", "SFW");
-	defaultOptionValue("savedsfwmode", "");
-	defaultOptionValue("opacity1", "0.05");
-	defaultOptionValue("opacity2", "0.5");
-	defaultOptionValue("collapseimage", "false");
-	defaultOptionValue("showIcon", "true");
-	defaultOptionValue("iconType", "coffee");
-	defaultOptionValue("iconTitle", "Decreased Productivity");
-	defaultOptionValue("disableFavicons", "false");
-	defaultOptionValue("hidePageTitles", "false");
-	defaultOptionValue("pageTitleText", "Google Chrome");
-	defaultOptionValue("enableStickiness", "false");
-	defaultOptionValue("maxwidth", "0");
-	defaultOptionValue("maxheight", "0");
-	defaultOptionValue("showContext", "true");
-	defaultOptionValue("showUnderline", "true");
-	defaultOptionValue("removeBold", "false");
-	defaultOptionValue("showUpdateNotifications", "true");
-	defaultOptionValue("font", "Arial");
-	defaultOptionValue("customfont", "");
-	defaultOptionValue("fontsize", "12");
-	defaultOptionValue("s_bg", "FFFFFF");
-	defaultOptionValue("s_link", "000099");
-	defaultOptionValue("s_table", "cccccc");
-	defaultOptionValue("s_text", "000000");
-	defaultOptionValue("customcss", "");
+async function setDefaultOptions() {
+	await defaultOptionValue("version", version); // version is global, from manifest
+	await defaultOptionValue("enable", "true");
+	await defaultOptionValue("enableToggle", "true");
+	await defaultOptionValue("hotkey", "CTRL F12");
+	await defaultOptionValue("paranoidhotkey", "ALT P");
+	await defaultOptionValue("global", "false");
+	await defaultOptionValue("newPages", "Uncloak");
+	await defaultOptionValue("sfwmode", "SFW");
+	await defaultOptionValue("savedsfwmode", "");
+	await defaultOptionValue("opacity1", "0.05");
+	await defaultOptionValue("opacity2", "0.5");
+	await defaultOptionValue("collapseimage", "false");
+	await defaultOptionValue("showIcon", "true");
+	await defaultOptionValue("iconType", "coffee");
+	await defaultOptionValue("iconTitle", "Decreased Productivity");
+	await defaultOptionValue("disableFavicons", "false");
+	await defaultOptionValue("hidePageTitles", "false");
+	await defaultOptionValue("pageTitleText", "Google Chrome");
+	await defaultOptionValue("enableStickiness", "false");
+	await defaultOptionValue("maxwidth", "0");
+	await defaultOptionValue("maxheight", "0");
+	await defaultOptionValue("showContext", "true");
+	await defaultOptionValue("showUnderline", "true");
+	await defaultOptionValue("removeBold", "false");
+	await defaultOptionValue("showUpdateNotifications", "true");
+	await defaultOptionValue("font", "Arial");
+	await defaultOptionValue("customfont", "");
+	await defaultOptionValue("fontsize", "12");
+	await defaultOptionValue("s_bg", "FFFFFF");
+	await defaultOptionValue("s_link", "000099");
+	await defaultOptionValue("s_table", "cccccc");
+	await defaultOptionValue("s_text", "000000");
+	await defaultOptionValue("customcss", "");
+
 	// fix hotkey shortcut if in old format (if using + as separator instead of space)
-	if (localStorage["hotkey"].indexOf('+') != -1) {
-		localStorage["hotkey"] = localStorage["hotkey"].replace(/\+$/, "APLUSA").replace(/\+/g, " ").replace(/APLUSA/, "+");
+    let hotkeySettings = await chrome.storage.local.get("hotkey");
+    let currentHotkey = hotkeySettings.hotkey;
+	if (currentHotkey && currentHotkey.indexOf('+') != -1) {
+		await chrome.storage.local.set({ "hotkey": currentHotkey.replace(/\+$/, "APLUSA").replace(/\+/g, " ").replace(/APLUSA/, "+") });
 	}
+
 	// delete old option if exists
-	if (optionExists("globalEnable"))
-		delete localStorage["globalEnable"];
+	if (await optionExists("globalEnable"))
+		await chrome.storage.local.remove("globalEnable");
 	// delete old option if exists
-	if (optionExists("style"))
-		delete localStorage["style"];
+	if (await optionExists("style"))
+		await chrome.storage.local.remove("style");
+
 	// set SFW Level to SFW (for new change in v0.46.3)
-	if (localStorage["sfwmode"] == "true")
-		localStorage["sfwmode"] = "SFW";
-	if (!optionExists("blackList")) localStorage['blackList'] = JSON.stringify([]);
-	if (!optionExists("whiteList")) localStorage['whiteList'] = JSON.stringify([]);
+    let sfwModeSettings = await chrome.storage.local.get("sfwmode");
+	if (sfwModeSettings.sfwmode == "true")
+		await chrome.storage.local.set({ "sfwmode": "SFW" });
+
+	if (!(await optionExists("blackList"))) await chrome.storage.local.set({'blackList': JSON.stringify([])});
+	if (!(await optionExists("whiteList"))) await chrome.storage.local.set({'whiteList': JSON.stringify([])});
 }
 // Context Menu
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("whitelistdomain"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 0);
-	if (localStorage["enable"] == "true") magician('false', tab.id);
-}});
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("blacklistdomain"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 1);
-	if (localStorage["enable"] == "true") magician('true', tab.id);
-}});
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("removelist"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 2);
-	if (localStorage["enable"] == "true")  {
-		var flag = 'false';
-		if (localStorage['newPages'] == 'Cloak' || localStorage['global'] == 'true') flag = 'true';
-		magician(flag, tab.id);
-	}
-}});
+// Wrapped in chrome.runtime.onInstalled
+chrome.runtime.onInstalled.addListener(async (details) => {
+    if (details.reason === "install" || details.reason === "update") {
+        // Ensure defaults are set before creating context menus that might rely on storage
+        await setDefaultOptions(); 
+
+        // Standard context menus
+        chrome.contextMenus.create({"id": "whitelistDomain", "title": chrome.i18n.getMessage("whitelistdomain"), "contexts": ['action','page'], "onclick": async function(info, tab){
+            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+            await domainHandler(extractDomainFromURL(tab.url), 0);
+            const { enable } = await chrome.storage.local.get("enable");
+            if (enable == "true") await magician('false', tab.id); 
+        }});
+        chrome.contextMenus.create({"id": "blacklistDomain", "title": chrome.i18n.getMessage("blacklistdomain"), "contexts": ['action','page'], "onclick": async function(info, tab){
+            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+            await domainHandler(extractDomainFromURL(tab.url), 1);
+            const { enable } = await chrome.storage.local.get("enable");
+            if (enable == "true") await magician('true', tab.id);
+        }});
+        chrome.contextMenus.create({"id": "removeListDomain", "title": chrome.i18n.getMessage("removelist"), "contexts": ['action','page'], "onclick": async function(info, tab){ 
+            if (!tab || !tab.url || tab.url.substring(0, 4) != 'http') return;
+            await domainHandler(extractDomainFromURL(tab.url), 2); 
+            const settings = await chrome.storage.local.get(["enable", "newPages", "global"]);
+            if (settings.enable == "true")  {
+                var flag = 'false';
+                if (settings.newPages == 'Cloak' || settings.global == 'true') flag = 'true';
+                await magician(flag, tab.id); 
+            }
+        }});
+        
+        // Conditional context menu from original dpContext logic
+        const { showContext } = await chrome.storage.local.get("showContext");
+        if (showContext == 'true') { 
+            chrome.contextMenus.create({"id": "openSafely", "title": chrome.i18n.getMessage("opensafely"), "contexts": ['link', 'image'], "onclick": newCloak}); 
+        }
+        // Note: If showContext can change, a chrome.storage.onChanged listener would be needed to add/remove this menu item dynamically.
+        // For now, it's set on install/update based on the setting at that time.
+    }
+    // On update, it's good practice to remove old context menus if their IDs/definitions changed.
+    // chrome.contextMenus.removeAll might be too broad if other extensions use context menus.
+    // Selective removal by ID before re-creation is safer if IDs might change or menus are deprecated.
+    // For this refactoring, we assume IDs are stable or new menus are additive.
+    // For now, we assume IDs are stable or new ones are added.
+});
 
 // Called by clicking on the context menu item
-function newCloak(info, tab) {
+async function newCloak(info, tab) { // Made async
 	// Enable cloaking (in case its been disabled) and open the link in a new tab
-	localStorage["enable"] = "true";
-	// If it's an image, load the "src" attribute
-	if (info.mediaType) chrome.tabs.create({'url': info.srcUrl}, function(tab){ cloakedTabs.push(tab.windowId+"|"+tab.id);recursiveCloak('true', localStorage["global"], tab.id); });
-	// Else, it's a normal link, so load the linkUrl.
-	else chrome.tabs.create({'url': info.linkUrl}, function(tab){ cloakedTabs.push(tab.windowId+"|"+tab.id);recursiveCloak('true', localStorage["global"], tab.id); });
+	await chrome.storage.local.set({"enable": "true"});
+    const settings = await chrome.storage.local.get("global"); // For recursiveCloak
+    
+    const createTabCallback = async (newTab) => {
+        if (newTab && newTab.id) {
+            cloakedTabs.push(newTab.windowId+"|"+newTab.id); 
+            await persistTabLists(); // Persist change to cloakedTabs
+            // recursiveCloak is async, ensure its execution is handled.
+            // Since this callback itself is async, await can be used.
+            await recursiveCloak('true', settings.global, newTab.id); 
+        } else {
+            console.error("newCloak: Failed to create tab or tab has no ID.");
+        }
+    };
+
+	if (info.mediaType) {
+        chrome.tabs.create({'url': info.srcUrl}, createTabCallback);
+    } else {
+	    chrome.tabs.create({'url': info.linkUrl}, createTabCallback);
+    }
 }
-// Add context menu item that shows only if you right-click on links/images.
-function dpContext() {
-	if (localStorage["showContext"] == 'true' && !contextLoaded) {
-		chrome.contextMenus.create({"title": chrome.i18n.getMessage("opensafely"), "contexts": ['link', 'image'], "onclick": function(info, tab){newCloak(info, tab);}});
-		contextLoaded = true;
-	}
-}
+// dpContext related logic is now fully within onInstalled.
 // ----- Main Functions
 function checkChrome(url) {
 	if (url.substring(0, 6) == 'chrome') return true;
 	return false;
 }
-function hotkeyChange() {
+async function hotkeyChange() { // Made async due to storage access
+    const settings = await chrome.storage.local.get(["enableToggle", "hotkey", "paranoidhotkey"]);
 	chrome.windows.getAll({"populate":true}, function(windows) {
 		windows.map(function(window) {
 			window.tabs.map(function(tab) {
-				if (!checkChrome(tab.url)) chrome.tabs.executeScript(tab.id, {code: 'hotkeySet("'+localStorage["enableToggle"]+'","'+localStorage["hotkey"]+'","'+localStorage["paranoidhotkey"]+'");', allFrames: true});
+				if (!checkChrome(tab.url) && tab.id) {
+                    try {
+                        chrome.scripting.executeScript({
+                            target: {tabId: tab.id, allFrames: true},
+                            func: (enableToggle, hotkey, paranoidhotkey) => {
+                                // This assumes hotkeySet is globally available in the content script context
+                                if (typeof hotkeySet === "function") {
+                                    hotkeySet(enableToggle, hotkey, paranoidhotkey);
+                                } else {
+                                    console.warn("hotkeySet function not found in content script for tab:", tab.id);
+                                }
+                            },
+                            args: [settings.enableToggle, settings.hotkey, settings.paranoidhotkey]
+                        }).catch(err => console.error("HotkeyChange: Error executing script in tab:", tab.id, err.message));
+                    } catch (e) {
+                        console.error("HotkeyChange: Generic error for tab:", tab.id, e.message);
+                    }
+                }
 			});
 		});
 	});
 }
-function optionsSaveTrigger(prevglob, newglob) {
-	var enable = localStorage["enable"];
+async function optionsSaveTrigger(prevglob, newglob) { // Made async
+    const { enable: currentEnableFromStorage } = await chrome.storage.local.get("enable");
+	var enable = currentEnableFromStorage;
 	var global = newglob;
 	if (prevglob == 'true' && newglob == 'false') {
 		global = 'true';
-		enable = 'false';
+		enable = 'false'; // This 'enable' is a local var, not changing storage here directly
 	}
 	if (global == 'false') {
-		for (var i=cloakedTabs.length-1; i>=0; --i) {
-			magician(enable, parseInt(cloakedTabs[i].split("|")[1]));
+		for (var i=cloakedTabs.length-1; i>=0; --i) { // cloakedTabs is global
+			await magician(enable, parseInt(cloakedTabs[i].split("|")[1])); // magician is async
 		}
-		if (enable == 'false') cloakedTabs = [];
-	} else recursiveCloak(enable, global);
+		if (enable == 'false') {
+            cloakedTabs = []; // Persist this change
+            await persistTabLists();
+        }
+	} else await recursiveCloak(enable, global); // recursiveCloak is async
 }
-function recursiveCloak(enable, global, tabId) {
+async function recursiveCloak(enable, global, tabId) { // Made async
+    const localEnable = enable; // Use a local copy of enable to avoid closure issues in async loops
 	if (global == 'true') {
-		chrome.windows.getAll({"populate":true}, function(windows) {
-			windows.map(function(window) {
-				window.tabs.map(function(tab) {
-					if (!checkChrome(tab.url)) {
-						var enabletemp = enable;
-						var dpdomaincheck = domainCheck(extractDomainFromURL(tab.url));
+		chrome.windows.getAll({"populate":true}, function(windows) { // Callback here cannot be async without Promise.all
+			windows.forEach(function(window) { // Changed map to forEach as we are not returning a new array
+				window.tabs.forEach(async function(tab) { // Made inner callback async
+					if (!checkChrome(tab.url) && tab.id) {
+						var enabletemp = localEnable;
+						var dpdomaincheck = domainCheck(extractDomainFromURL(tab.url)); // Uses global lists
 						// Ensure whitelisted or blacklisted tabs stay as they are
 						if (enabletemp == 'true' && dpdomaincheck == '0') enabletemp = 'false';
 						else if (enabletemp == 'false' && dpdomaincheck == '1') enabletemp = 'true';
-						magician(enabletemp, tab.id);
-						var dpTabId = tab.windowId+"|"+tab.id;
+						
+                        await magician(enabletemp, tab.id); // magician is async
+						
+                        var dpTabId = tab.windowId+"|"+tab.id;
 						var dpcloakindex = cloakedTabs.indexOf(dpTabId);
 						var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
 						if (enabletemp == 'false') {
@@ -253,205 +327,409 @@ function recursiveCloak(enable, global, tabId) {
 							if (dpcloakindex == -1) cloakedTabs.push(dpTabId);
 							if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 						}
+                        await persistTabLists(); // Persist changes to tab lists
 					}
 				});
 			});
 		});
 	} else {
-		if (tabId) magician(enable, tabId);
+		if (tabId) await magician(localEnable, tabId); // magician is async
 	}
 }
-function magician(enable, tabId) {
+async function magician(enable, tabId) { // Made async
+    if (!tabId) {
+        console.warn("magician called with null tabId");
+        return;
+    }
 	if (enable == 'true') {
-		if (localStorage["disableFavicons"] == 'true' && localStorage["hidePageTitles"] == 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconblank();replaceTitle("'+localStorage["pageTitleText"]+'");titleBind("'+localStorage["pageTitleText"]+'");', allFrames: true});
-		else if (localStorage["disableFavicons"] == 'true' && localStorage["hidePageTitles"] != 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconblank();titleRestore();', allFrames: true});
-		else if (localStorage["disableFavicons"] != 'true' && localStorage["hidePageTitles"] == 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconrestore();replaceTitle("'+localStorage["pageTitleText"]+'");titleBind("'+localStorage["pageTitleText"]+'");', allFrames: true});
-		else if (localStorage["disableFavicons"] != 'true' && localStorage["hidePageTitles"] != 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconrestore();titleRestore();', allFrames: true});
-	} else chrome.tabs.executeScript(tabId, {code: "removeCss();", allFrames: true});
-	if (localStorage["showIcon"] == 'true') {
-		if (enable == 'true') chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabId});
-		else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabId});
-		chrome.pageAction.setTitle({title: dptitle, tabId: tabId});
-		chrome.pageAction.show(tabId);
-	} else chrome.pageAction.hide(tabId);
+        const { disableFavicons, hidePageTitles, pageTitleText } = await chrome.storage.local.get(["disableFavicons", "hidePageTitles", "pageTitleText"]);
+        let scriptFunc;
+        let scriptArgs = [];
+
+        if (disableFavicons == 'true' && hidePageTitles == 'true') {
+            scriptFunc = (text) => { if(typeof init === 'function') {init(); faviconblank(); replaceTitle(text); titleBind(text);} else console.warn('Magician: functions not found'); };
+            scriptArgs = [pageTitleText];
+        } else if (disableFavicons == 'true' && hidePageTitles != 'true') {
+            scriptFunc = () => { if(typeof init === 'function') {init(); faviconblank(); titleRestore();} else console.warn('Magician: functions not found'); };
+        } else if (disableFavicons != 'true' && hidePageTitles == 'true') {
+            scriptFunc = (text) => { if(typeof init === 'function') {init(); faviconrestore(); replaceTitle(text); titleBind(text);} else console.warn('Magician: functions not found'); };
+            scriptArgs = [pageTitleText];
+        } else if (disableFavicons != 'true' && hidePageTitles != 'true') {
+            scriptFunc = () => { if(typeof init === 'function') {init(); faviconrestore(); titleRestore();} else console.warn('Magician: functions not found'); };
+        }
+
+        if (scriptFunc) {
+            try {
+                await chrome.scripting.executeScript({
+                    target: {tabId: tabId, allFrames: true},
+                    func: scriptFunc,
+                    args: scriptArgs
+                }).catch(err => console.error("Magician (enable true): Error executing script in tab:", tabId, err.message, "Args:", scriptArgs));
+            } catch (e) {
+                 console.error("Magician (enable true): Generic error for tab:", tabId, e.message);
+            }
+        }
+	} else { // enable == 'false'
+        try {
+            await chrome.scripting.executeScript({
+                target: {tabId: tabId, allFrames: true},
+                func: () => { if(typeof removeCss === 'function') removeCss(); else console.warn('Magician: removeCss not found'); }
+            }).catch(err => console.error("Magician (enable false): Error executing script in tab:", tabId, err.message));
+        } catch (e) {
+            console.error("Magician (enable false): Generic error for tab:", tabId, e.message);
+        }
+    }
+    const settings = await chrome.storage.local.get("showIcon"); // This was already here, good.
+	if (settings.showIcon == 'true') {
+		if (enable == 'true') chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabId});
+		else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabId});
+		chrome.action.setTitle({title: dptitle, tabId: tabId});
+		// chrome.action.show(tabId); // V3: use chrome.action.enable(tabId)
+        if (tabId) chrome.action.enable(tabId);
+	} else {
+        // chrome.action.hide(tabId); // V3: use chrome.action.disable(tabId) and optionally clear icon/title
+        if (tabId) {
+            chrome.action.disable(tabId);
+            // Optionally set a blank icon or a specific "hidden" icon
+            // chrome.action.setIcon({path: "img/empty.png", tabId: tabId}); 
+            // chrome.action.setTitle({title: "", tabId: tabId});
+        }
+    }
 }
-function dpHandle(tab) {
+async function dpHandle(tab) { // Made async
 	if (checkChrome(tab.url)) return;
-	if (localStorage["global"] == "true" && domainCheck(extractDomainFromURL(tab.url)) != 1) {
-		if (localStorage["enable"] == "true") {
-			recursiveCloak('false', 'true');
-			localStorage["enable"] = "false";
+    let settings = await chrome.storage.local.get(["global", "enable"]); // Get settings first
+
+	if (settings.global == "true" && domainCheck(extractDomainFromURL(tab.url)) != 1) { // domainCheck uses global lists
+		if (settings.enable == "true") {
+			await recursiveCloak('false', 'true'); // recursiveCloak is async
+			await chrome.storage.local.set({enable: "false"});
 		} else {
-			recursiveCloak('true', 'true');
-			localStorage["enable"] = "true";
+			await recursiveCloak('true', 'true'); // recursiveCloak is async
+			await chrome.storage.local.set({enable: "true"});
 		}
 	} else {
 		var dpTabId = tab.windowId+"|"+tab.id;
-		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
-		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
-		localStorage["enable"] = "true";
+		var dpcloakindex = cloakedTabs.indexOf(dpTabId); // cloakedTabs is global
+		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId); // uncloakedTabs is global
+		await chrome.storage.local.set({enable: "true"}); // Set enable to true for non-global toggles
+
 		if (dpcloakindex != -1) {
-			magician('false', tab.id);
+			await magician('false', tab.id); // magician is async
 			if (dpuncloakindex == -1) uncloakedTabs.push(dpTabId);
 			cloakedTabs.splice(dpcloakindex, 1);
 		} else {
-			magician('true', tab.id);
+			await magician('true', tab.id); // magician is async
 			cloakedTabs.push(dpTabId);
 			if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 		}
+        await persistTabLists(); // Persist changes to tab lists
 	}
 }
-function setDPIcon() {
-	dpicon = localStorage["iconType"];
-	dptitle = localStorage["iconTitle"];
+async function setDPIcon() { // Made async
+	// dpicon, dptitle will be loaded from storage
+    const settings = await chrome.storage.local.get(["iconType", "iconTitle", "showIcon"]);
+    dpicon = settings.iconType;
+    dptitle = settings.iconTitle;
+
 	chrome.windows.getAll({"populate":true}, function(windows) {
 		windows.map(function(window) {
 			window.tabs.map(function(tab) {
-				if (cloakedTabs.indexOf(tab.windowId+"|"+tab.id) != -1) chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tab.id});
-				else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tab.id});
-				chrome.pageAction.setTitle({title: dptitle, tabId: tab.id});
-				if (localStorage["showIcon"] == 'true') chrome.pageAction.show(tab.id);
-				else chrome.pageAction.hide(tab.id);
+                if (!tab.id) return; // Defensive check
+				if (cloakedTabs.indexOf(tab.windowId+"|"+tab.id) != -1) chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tab.id});
+				else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tab.id});
+				chrome.action.setTitle({title: dptitle, tabId: tab.id});
+				if (settings.showIcon == 'true') {
+                    // chrome.action.show(tab.id); // V3: use chrome.action.enable(tab.id)
+                    chrome.action.enable(tab.id);
+                } else {
+                    // chrome.action.hide(tab.id); // V3: use chrome.action.disable(tab.id)
+                    chrome.action.disable(tab.id);
+                    // Optionally clear icon/title
+                    // chrome.action.setIcon({path: "img/empty.png", tabId: tab.id});
+                    // chrome.action.setTitle({title: "", tabId: tab.id});
+                }
 			});
 		});
 	});
 }
-function initLists() {
-	blackList = JSON.parse(localStorage['blackList']).sort();
-	whiteList = JSON.parse(localStorage['whiteList']).sort();	
+async function initLists() {
+    const result = await chrome.storage.local.get(['blackList', 'whiteList']);
+    // setDefaultOptions should ensure these are initialized as stringified empty arrays if not present
+    try {
+        blackList = JSON.parse(result.blackList || '[]').sort();
+        whiteList = JSON.parse(result.whiteList || '[]').sort();
+    } catch (e) {
+        console.error("Error parsing blacklist/whitelist from storage:", e);
+        blackList = [];
+        whiteList = [];
+    }
 }
 // ----- Request library to support content script communication
-chrome.tabs.onUpdated.addListener(function(tabid, changeinfo, tab) {
+chrome.tabs.onUpdated.addListener(async function(tabid, changeinfo, tab) { // Made async
 	if (changeinfo.status == "loading") {
+        if (!tabid) { console.warn("onUpdated: null tabid"); return; }
 		var dpTabId = tab.windowId+"|"+tabid;
-		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
-		var enable = enabled(tab, dpcloakindex);
-		if (localStorage["showIcon"] == "true") {
-			if (enable == "true") chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabid});
-			else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabid});
-			chrome.pageAction.setTitle({title: dptitle, tabId: tabid});
-			chrome.pageAction.show(tabid);
-		} else chrome.pageAction.hide(tabid);
+		var dpcloakindex = cloakedTabs.indexOf(dpTabId); 
+		var current_enable_status = await enabled(tab, dpcloakindex); 
+        const { showIcon: currentShowIcon } = await chrome.storage.local.get("showIcon"); 
+
+		if (currentShowIcon == "true") {
+            // dpicon, dptitle are global and should be loaded by setDPIcon at startup
+			if (current_enable_status == "true") chrome.action.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabid});
+			else chrome.action.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabid});
+			chrome.action.setTitle({title: dptitle, tabId: tabid});
+            try { chrome.action.enable(tabid); } catch(e) { console.warn("Failed to enable action for tab", tabid, e.message); }
+		} else {
+            try { 
+                chrome.action.disable(tabid);
+                // chrome.action.setIcon({path: "img/empty.png", tabId: tabid}); // Optional: set blank icon
+                // chrome.action.setTitle({title: "", tabId: tabid});           // Optional: set blank title
+            } catch(e) { console.warn("Failed to disable action for tab", tabid, e.message); }
+        }
 		if (checkChrome(tab.url)) return;
-		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
-		if (enable == "true") {
-			magician('true', tabid);
-			if (localStorage["global"] == "false" && localStorage["enable"] == "false") localStorage["enable"] = "true";
+		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId); 
+        const storeSettings = await chrome.storage.local.get(["global", "enable", "enableStickiness"]);
+
+		if (current_enable_status == "true") {
+			await magician('true', tabid); 
+			if (storeSettings.global == "false" && storeSettings.enable == "false") await chrome.storage.local.set({enable: "true"});
 			if (dpcloakindex == -1) cloakedTabs.push(dpTabId);
 			if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
+            await persistTabLists();
 		} else {
-			if (localStorage["enableStickiness"] == "true") {
+			if (storeSettings.enableStickiness == "true") {
 				if (tab.openerTabId) {
+                    const domainCheckResult = domainCheck(extractDomainFromURL(tab.url)); // Uses global lists
 					if (cloakedTabs.indexOf(tab.windowId+"|"+tab.openerTabId) != -1 && dpuncloakindex == -1) {
-						if (domainCheck(extractDomainFromURL(tab.url)) != '0') {
-							magician('true', tabid);
+						if (domainCheckResult != '0') {
+							await magician('true', tabid);
 							cloakedTabs.push(dpTabId);
+                            await persistTabLists();
 							return;
 						}
 					}
 					if (dpuncloakindex == -1) uncloakedTabs.push(dpTabId);
 					if (dpcloakindex != -1) cloakedTabs.splice(dpcloakindex, 1);
+                    await persistTabLists();
 				} else {
-					chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-						if (tabs[0].windowId == tab.windowId && cloakedTabs.indexOf(tabs[0].windowId+"|"+tabs[0].id) != -1 && dpuncloakindex == -1) {
-							if (domainCheck(extractDomainFromURL(tab.url)) != '0') {
-								magician('true', tabid);
+                    // chrome.tabs.query needs to be handled carefully with async/await
+                    // It's better to wrap it in a new Promise if we need to await its result directly here.
+                    // Or, ensure the logic depending on it is within its callback.
+                    // For now, assuming the original logic flow is acceptable if query callback is async.
+					chrome.tabs.query({active: true, currentWindow: true}, async function(tabs) { 
+                        if (!tabs || tabs.length === 0 || !tabs[0].id) { console.warn("onUpdated: query returned no active tab or tab with no id."); return; }
+                        const activeTab = tabs[0];
+                        const domainCheckResult = domainCheck(extractDomainFromURL(tab.url)); // Uses global lists
+						if (activeTab.windowId == tab.windowId && cloakedTabs.indexOf(activeTab.windowId+"|"+activeTab.id) != -1 && dpuncloakindex == -1) {
+							if (domainCheckResult != '0') {
+								await magician('true', tabid);
 								cloakedTabs.push(dpTabId);
+                                await persistTabLists();
 								return;
 							}
 						}
 						if (dpuncloakindex == -1) uncloakedTabs.push(dpTabId);
 						if (dpcloakindex != -1) cloakedTabs.splice(dpcloakindex, 1);
+                        await persistTabLists();
 					});
 				}
 			}
 		}
 	}
 });	
-chrome.tabs.onRemoved.addListener(function(tabid, windowInfo) {
+chrome.tabs.onRemoved.addListener(async function(tabid, windowInfo) { // Made async
 	var dpTabId = windowInfo.windowId+"|"+tabid;
 	var dpcloakindex = cloakedTabs.indexOf(dpTabId);
 	var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
 	if (dpcloakindex != -1) cloakedTabs.splice(dpcloakindex, 1);
 	if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
+    await persistTabLists(); // Persist changes
 });
+
 var requestDispatchTable = {
-	"get-enabled": function(request, sender, sendResponse) {
+	"get-enabled": async function(request, sender, sendResponse) { // Made async
+        if (!sender.tab || !sender.tab.id) { // Guard against missing tab or tab.id
+             sendResponse({error: "Missing tab information"}); return true;
+        }
 		var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
 		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
-		var enable = enabled(sender.tab, dpcloakindex);
-		if (enable == 'true' && dpcloakindex == -1) cloakedTabs.push(dpTabId);
-		sendResponse({enable: enable, background: localStorage["s_bg"], favicon: localStorage["disableFavicons"], hidePageTitles: localStorage["hidePageTitles"], pageTitleText: localStorage["pageTitleText"], enableToggle: localStorage["enableToggle"], hotkey: localStorage["hotkey"], paranoidhotkey: localStorage["paranoidhotkey"]});
+		var currentEnable = await enabled(sender.tab, dpcloakindex); 
+		if (currentEnable == 'true' && dpcloakindex == -1) {
+            cloakedTabs.push(dpTabId); 
+            await persistTabLists();
+        }
+        const settings = await chrome.storage.local.get(["s_bg", "disableFavicons", "hidePageTitles", "pageTitleText", "enableToggle", "hotkey", "paranoidhotkey"]);
+		sendResponse({enable: currentEnable, background: settings.s_bg, favicon: settings.disableFavicons, hidePageTitles: settings.hidePageTitles, pageTitleText: settings.pageTitleText, enableToggle: settings.enableToggle, hotkey: settings.hotkey, paranoidhotkey: settings.paranoidhotkey});
+        return true; 
 	},
-	"toggle": function(request, sender, sendResponse) {
-		if (localStorage["savedsfwmode"] != "") {
-			localStorage["sfwmode"] = localStorage["savedsfwmode"];
-			localStorage["savedsfwmode"] = "";
-			if (localStorage["global"] == "true") recursiveCloak('true', 'true');
+	"toggle": async function(request, sender, sendResponse) { // Made async
+        if (!sender.tab || !sender.tab.id) { sendResponse({error: "Missing tab info"}); return true;}
+        let settings = await chrome.storage.local.get(["savedsfwmode", "sfwmode", "global"]);
+		if (settings.savedsfwmode != "") {
+			await chrome.storage.local.set({sfwmode: settings.savedsfwmode, savedsfwmode: ""});
+			if (settings.global == "true") await recursiveCloak('true', 'true'); 
 			else {
-				magician('true', sender.tab.id);
+				await magician('true', sender.tab.id); 
 				var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
 				var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
 				if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 				if (cloakedTabs.indexOf(dpTabId) == -1) cloakedTabs.push(dpTabId);
+                await persistTabLists(); 
 			}
-			localStorage["enable"] = "true";
+			await chrome.storage.local.set({enable: "true"});
 		} else {
-			dpHandle(sender.tab);
+			await dpHandle(sender.tab); 
 		}
+        sendResponse({}); 
+        return true; 
 	},
-	"toggleparanoid": function(request, sender, sendResponse) {
-		if (localStorage["savedsfwmode"] == "") {
-			localStorage["savedsfwmode"] = localStorage["sfwmode"];
-			localStorage["sfwmode"] = "Paranoid";
-			if (localStorage["global"] == "true") recursiveCloak('true', 'true');
+	"toggleparanoid": async function(request, sender, sendResponse) { // Made async
+        if (!sender.tab || !sender.tab.id) { sendResponse({error: "Missing tab info"}); return true;}
+        let settings = await chrome.storage.local.get(["savedsfwmode", "sfwmode", "global"]);
+		if (settings.savedsfwmode == "") {
+			await chrome.storage.local.set({savedsfwmode: settings.sfwmode, sfwmode: "Paranoid"});
+			if (settings.global == "true") await recursiveCloak('true', 'true'); 
 			else {
-				magician('true', sender.tab.id);
+				await magician('true', sender.tab.id); 
 				var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
 				var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
 				if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 				if (cloakedTabs.indexOf(dpTabId) == -1) cloakedTabs.push(dpTabId);
+                await persistTabLists(); 
 			}
-			localStorage["enable"] = "true";
+			await chrome.storage.local.set({enable: "true"});
 		} else {
-			localStorage["sfwmode"] = localStorage["savedsfwmode"];
-			localStorage["savedsfwmode"] = "";
-			dpHandle(sender.tab);
+			await chrome.storage.local.set({sfwmode: settings.savedsfwmode, savedsfwmode: ""});
+			await dpHandle(sender.tab); 
 		}
+        sendResponse({}); 
+        return true; 
 	},
-	"get-settings": function(request, sender, sendResponse) {
-		var enable, fontface;
-		if (localStorage["font"] == '-Custom-') {
-			if (localStorage["customfont"]) fontface = localStorage["customfont"];
+	"get-settings": async function(request, sender, sendResponse) { // Made async
+        if (!sender.tab) { sendResponse({error: "Missing tab info"}); return true;}
+		var currentEnable, fontface;
+        const settings = await chrome.storage.local.get([
+            "font", "customfont", "global", "sfwmode", "fontsize", "showUnderline",
+            "s_bg", "s_text", "s_table", "s_link", "removeBold", "opacity1",
+            "opacity2", "collapseimage", "maxheight", "maxwidth", "customcss"
+        ]);
+
+		if (settings.font == '-Custom-') {
+			if (settings.customfont) fontface = settings.customfont;
 			else fontface = 'Arial';
-		} else fontface = localStorage["font"];
-		if (localStorage["global"] == "false") enable = 'true';
-		else enable = enabled(sender.tab);
-		sendResponse({enable: enable, sfwmode: localStorage["sfwmode"], font: fontface, fontsize: localStorage["fontsize"], underline: localStorage["showUnderline"], background: localStorage["s_bg"], text: localStorage["s_text"], table: localStorage["s_table"], link: localStorage["s_link"], bold: localStorage["removeBold"], opacity1: localStorage["opacity1"], opacity2: localStorage["opacity2"], collapseimage: localStorage["collapseimage"], maxheight: localStorage["maxheight"], maxwidth: localStorage["maxwidth"], customcss: localStorage["customcss"]});
-	}
+		} else fontface = settings.font;
+
+		if (settings.global == "false") currentEnable = 'true';
+		else currentEnable = await enabled(sender.tab); 
+
+		sendResponse({
+            enable: currentEnable, sfwmode: settings.sfwmode, font: fontface, fontsize: settings.fontsize,
+            underline: settings.showUnderline, background: settings.s_bg, text: settings.s_text,
+            table: settings.s_table, link: settings.s_link, bold: settings.removeBold,
+            opacity1: settings.opacity1, opacity2: settings.opacity2, collapseimage: settings.collapseimage,
+            maxheight: settings.maxheight, maxwidth: settings.maxwidth, customcss: settings.customcss
+        });
+        return true; 
+	},
+    // Handlers for messages from options.js
+    "setDPIcon": async function(request, sender, sendResponse) {
+        await setDPIcon();
+        sendResponse({status: "DPIcon updated"});
+        return true;
+    },
+    "hotkeyChange": async function(request, sender, sendResponse) {
+        await hotkeyChange();
+        sendResponse({status: "Hotkey settings applied"});
+        return true;
+    },
+    "optionsSaveTrigger": async function(request, sender, sendResponse) {
+        if (request.oldGlobalValue !== undefined && request.newGlobalValue !== undefined) {
+            await optionsSaveTrigger(request.oldGlobalValue, request.newGlobalValue);
+            sendResponse({status: "Options trigger processed"});
+        } else {
+            sendResponse({error: "Missing global values for optionsSaveTrigger"});
+        }
+        return true;
+    },
+    "domainHandler": async function(request, sender, sendResponse) {
+        if (request.domain !== undefined && request.listType !== undefined) {
+            await domainHandler(request.domain, request.listType);
+            sendResponse({status: "Domain handler processed"});
+        } else {
+            sendResponse({error: "Missing domain or listType for domainHandler"});
+        }
+        return true;
+    },
+    "initLists": async function(request, sender, sendResponse) {
+        await initLists();
+        sendResponse({status: "Lists re-initialized"});
+        return true;
+    }
 }
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
-	if (request.reqtype in requestDispatchTable) requestDispatchTable[request.reqtype](request, sender, sendResponse);
-	else sendResponse({});
+    // Check if the message is from our options page or content script (for reqtype)
+    // or if it's a new action-based message from options.js
+	if (request.reqtype && request.reqtype in requestDispatchTable) {
+        requestDispatchTable[request.reqtype](request, sender, sendResponse);
+        return true; 
+    } else if (request.action && request.action in requestDispatchTable) {
+        requestDispatchTable[request.action](request, sender, sendResponse);
+        return true;
+    }
+    // Optional: send a response for unhandled messages or let them time out.
+    // console.warn("Unhandled message:", request);
+    // sendResponse({error: "Unknown request type or action"}); 
+    // Returning false or undefined means the channel is closed synchronously.
 });
-// ----- If page action icon is clicked, either enable or disable the cloak
-chrome.pageAction.onClicked.addListener(function(tab) {
-	dpHandle(tab);
+// ----- If action icon is clicked, either enable or disable the cloak
+chrome.action.onClicked.addListener(async function(tab) { // dpHandle is async
+	await dpHandle(tab);
 });
-// Execute
-setDefaultOptions();
-// save blacklist and whitelist in global variable for faster lookups
-initLists();
-setDPIcon();
-dpContext();
-if ((!optionExists("version") || localStorage["version"] != version) && localStorage["showUpdateNotifications"] == 'true') {
-	chrome.tabs.create({ url: chrome.extension.getURL('updated.html'), selected: false });
-	localStorage["version"] = version;
+
+// ----- Helper functions for tab list persistence
+async function persistTabLists() {
+    try {
+        await chrome.storage.local.set({ 
+            cloakedTabs: JSON.stringify(cloakedTabs), 
+            uncloakedTabs: JSON.stringify(uncloakedTabs) 
+        });
+    } catch (e) {
+        console.error("Error persisting tab lists:", e);
+    }
 }
+
+async function loadTabLists() {
+    try {
+        const result = await chrome.storage.local.get(['cloakedTabs', 'uncloakedTabs']);
+        cloakedTabs = result.cloakedTabs ? JSON.parse(result.cloakedTabs) : [];
+        uncloakedTabs = result.uncloakedTabs ? JSON.parse(result.uncloakedTabs) : [];
+    } catch (e) {
+        console.error("Error loading tab lists:", e);
+        cloakedTabs = [];
+        uncloakedTabs = [];
+    }
+}
+
+// ----- Initialization function
+async function initializeExtension() {
+    await loadTabLists();      // Load persisted tab states first
+    await setDefaultOptions(); 
+    await initLists();         
+    await setDPIcon();         
+    // dpContext() is now primarily handled in chrome.runtime.onInstalled.
+    const storeSettings = await chrome.storage.local.get(["version", "showUpdateNotifications"]); // Renamed to storeSettings
+    const manifestVersion = chrome.runtime.getManifest().version;
+    if ((!storeSettings.version || storeSettings.version != manifestVersion) && storeSettings.showUpdateNotifications == 'true') {
+        chrome.tabs.create({ url: chrome.runtime.getURL('updated.html'), active: false });
+        await chrome.storage.local.set({ version: manifestVersion });
+    }
+}
+
+// Call initialization
+initializeExtension();
+
+// Listener for updates, no changes needed here other than it's good practice.
 chrome.runtime.onUpdateAvailable.addListener(function (details) {
 	// an update is available, but wait until user restarts their browser as to not disrupt their current session and cloaked tabs.
 });
