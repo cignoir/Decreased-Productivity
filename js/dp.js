@@ -5,6 +5,8 @@ var origtitle;
 var postloaddelay;
 var dphotkeylistener;
 var timestamp = Math.round(new Date().getTime()/1000.0);
+var bodyObserver;
+var titleObserver;
 function addCloak(sfw, f, fsize, u, bg, text, table, link, bold, o1, o2, collapseimage, customcss) {
 	// Inject CSS into page
 	var cssinject = document.createElement("style");
@@ -153,7 +155,7 @@ function removeCss(name) {
 	if (typeof(name) === 'undefined') {
 		faviconrestore();
 		titleRestore();
-		jQuery('body').unbind('DOMSubtreeModified.decreasedproductivity'+timestamp);
+		if (bodyObserver) bodyObserver.disconnect();
 		jQuery("[__decreased__]").each(function() {
 			jQuery(this).removeClass('dp'+timestamp+'_visible dp'+timestamp+'_unbold dp'+timestamp+'_link dp'+timestamp+'_text dp'+timestamp+'_hide').removeAttr("__decreased__");
 		});
@@ -164,11 +166,12 @@ function init() {
 		if (response.enable == "true") {
 			addCloak(response.sfwmode, response.font, response.fontsize, response.underline, response.background, response.text, response.table, response.link, response.bold, response.opacity1, response.opacity2, response.collapseimage, response.customcss);
 			dpPostLoad(response.maxheight, response.maxwidth, response.sfwmode, response.bold);
-			jQuery('body').unbind('DOMSubtreeModified.decreasedproductivity'+timestamp);
-			jQuery('body').bind('DOMSubtreeModified.decreasedproductivity'+timestamp, function() {
-				clearTimeout(postloaddelay);
-				postloaddelay = setTimeout(function(){ dpPostLoad(response.maxheight, response.maxwidth, response.sfwmode, response.bold) }, 500);
-			});
+            if (bodyObserver) bodyObserver.disconnect();
+            bodyObserver = new MutationObserver(function(mutations) {
+                clearTimeout(postloaddelay);
+                postloaddelay = setTimeout(function(){ dpPostLoad(response.maxheight, response.maxwidth, response.sfwmode, response.bold) }, 500);
+            });
+            bodyObserver.observe(document.body, { childList: true, subtree: true });
 		}
 	});
 }
@@ -207,13 +210,14 @@ function replaceTitle(text) {
 	}
 }
 function titleBind(text) {
-	jQuery('title').unbind('DOMSubtreeModified.decreasedproductivity'+timestamp);
-	jQuery('title').bind('DOMSubtreeModified.decreasedproductivity'+timestamp, function() {
-		replaceTitle(text);
-	});
+    if (titleObserver) titleObserver.disconnect();
+    titleObserver = new MutationObserver(function(mutations) {
+        replaceTitle(text);
+    });
+    titleObserver.observe(document.querySelector('title'), { childList: true, subtree: true, characterData: true });
 }
 function titleRestore() {
-	jQuery('title').unbind('DOMSubtreeModified.decreasedproductivity'+timestamp);
+    if (titleObserver) titleObserver.disconnect();
 	if (origtitle) document.title = origtitle;
 }
 function hotkeySet(hotkeyenabled, hotkey, paranoidhotkey) {

@@ -191,46 +191,9 @@ async function setDefaultOptions() {
 }
 
 // Context Menu - Updated for Manifest V3
-chrome.contextMenus.create({
-	"id": "whitelistdomain",
-	"title": chrome.i18n.getMessage("whitelistdomain"), 
-	"contexts": ['action']
-});
-
-chrome.contextMenus.create({
-	"id": "blacklistdomain",
-	"title": chrome.i18n.getMessage("blacklistdomain"), 
-	"contexts": ['action']
-});
-
-chrome.contextMenus.create({
-	"id": "removelist",
-	"title": chrome.i18n.getMessage("removelist"), 
-	"contexts": ['action']
-});
-
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-	if (tab.url.substring(0, 4) != 'http') return;
-	
-	switch(info.menuItemId) {
-		case "whitelistdomain":
-			await domainHandler(extractDomainFromURL(tab.url), 0);
-			if (await getStorageValue("enable") == "true") magician('false', tab.id);
-			break;
-		case "blacklistdomain":
-			await domainHandler(extractDomainFromURL(tab.url), 1);
-			if (await getStorageValue("enable") == "true") magician('true', tab.id);
-			break;
-		case "removelist":
-			await domainHandler(extractDomainFromURL(tab.url), 2);
-			if (await getStorageValue("enable") == "true") {
-				var flag = 'false';
-				if (await getStorageValue('newPages') == 'Cloak' || await getStorageValue('global') == 'true') flag = 'true';
-				magician(flag, tab.id);
-			}
-			break;
-	}
-});
+// ContextメニューはonInstalled時に一度だけ作成する
+// chrome.contextMenus.create() の呼び出しは onInstalled リスナー内に移動されます。
+// 既存の重複コメントを削除
 
 // Called by clicking on the context menu item
 async function newCloak(info, tab) {
@@ -645,7 +608,7 @@ chrome.runtime.onStartup.addListener(async () => {
 	await initializeStorage();
 	await setDefaultOptions();
 	await initLists();
-	setDPIcon();
+	setDPIcon(); // storageCacheが初期化された後に呼び出す
 	await dpContext();
 });
 
@@ -653,8 +616,50 @@ chrome.runtime.onInstalled.addListener(async () => {
 	await initializeStorage();
 	await setDefaultOptions();
 	await initLists();
-	setDPIcon();
+	setDPIcon(); // storageCacheが初期化された後に呼び出す
 	await dpContext();
+	
+	// Context Menu - Updated for Manifest V3
+	chrome.contextMenus.create({
+		"id": "whitelistdomain",
+		"title": chrome.i18n.getMessage("whitelistdomain"), 
+		"contexts": ['action']
+	});
+
+	chrome.contextMenus.create({
+		"id": "blacklistdomain",
+		"title": chrome.i18n.getMessage("blacklistdomain"), 
+		"contexts": ['action']
+	});
+
+	chrome.contextMenus.create({
+		"id": "removelist",
+		"title": chrome.i18n.getMessage("removelist"), 
+		"contexts": ['action']
+	});
+
+	chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+		if (tab.url.substring(0, 4) != 'http') return;
+		
+		switch(info.menuItemId) {
+			case "whitelistdomain":
+				await domainHandler(extractDomainFromURL(tab.url), 0);
+				if (await getStorageValue("enable") == "true") magician('false', tab.id);
+				break;
+			case "blacklistdomain":
+				await domainHandler(extractDomainFromURL(tab.url), 1);
+				if (await getStorageValue("enable") == "true") magician('true', tab.id);
+				break;
+			case "removelist":
+				await domainHandler(extractDomainFromURL(tab.url), 2);
+				if (await getStorageValue("enable") == "true") {
+					var flag = 'false';
+					if (await getStorageValue('newPages') == 'Cloak' || await getStorageValue('global') == 'true') flag = 'true';
+					magician(flag, tab.id);
+				}
+				break;
+		}
+	});
 	
 	if ((!optionExists("version") || await getStorageValue("version") != version) && await getStorageValue("showUpdateNotifications") == 'true') {
 		await setStorageValue("version", version);
