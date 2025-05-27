@@ -190,11 +190,6 @@ async function setDefaultOptions() {
 	}
 }
 
-// Context Menu - Updated for Manifest V3
-// ContextメニューはonInstalled時に一度だけ作成する
-// chrome.contextMenus.create() の呼び出しは onInstalled リスナー内に移動されます。
-// 既存の重複コメントを削除
-
 // Called by clicking on the context menu item
 async function newCloak(info, tab) {
 	await setStorageValue("enable", "true");
@@ -608,7 +603,7 @@ chrome.runtime.onStartup.addListener(async () => {
 	await initializeStorage();
 	await setDefaultOptions();
 	await initLists();
-	setDPIcon(); // storageCacheが初期化された後に呼び出す
+	setDPIcon();
 	await dpContext();
 });
 
@@ -616,7 +611,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 	await initializeStorage();
 	await setDefaultOptions();
 	await initLists();
-	setDPIcon(); // storageCacheが初期化された後に呼び出す
+	setDPIcon();
 	await dpContext();
 	
 	// Context Menu - Updated for Manifest V3
