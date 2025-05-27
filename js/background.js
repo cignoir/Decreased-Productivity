@@ -2,33 +2,53 @@
 // Icon by dunedhel: http://dunedhel.deviantart.com/
 // Supporting functions by AdThwart - T. Joseph
 
-//'use strict'; - enable after testing
-var version = (function () {
-	var xhr = new XMLHttpRequest();
-	xhr.open('GET', chrome.extension.getURL('manifest.json'), false);
-	xhr.send(null);
-	return JSON.parse(xhr.responseText).version;
-}());
+'use strict';
+
+// Global variables
+var version = "0.46.56.12";
 var cloakedTabs = [];
 var uncloakedTabs = [];
 var contextLoaded = false;
 var dpicon, dptitle;
 var blackList, whiteList;
+var storageCache = {};
+
+// Storage helper functions for Manifest V3
+async function getStorageValue(key, defaultValue = null) {
+	if (storageCache[key] !== undefined) {
+		return storageCache[key];
+	}
+	const result = await chrome.storage.local.get([key]);
+	const value = result[key] !== undefined ? result[key] : defaultValue;
+	storageCache[key] = value;
+	return value;
+}
+
+async function setStorageValue(key, value) {
+	storageCache[key] = value;
+	await chrome.storage.local.set({ [key]: value });
+}
+
+function optionExists(key) {
+	return storageCache[key] !== undefined;
+}
 
 // ----- Supporting Functions
 
 function enabled(tab, dpcloakindex) {
 	var dpdomaincheck = domainCheck(extractDomainFromURL(tab.url));
 	var dpcloakindex = dpcloakindex || cloakedTabs.indexOf(tab.windowId+"|"+tab.id);
-	if ((localStorage["enable"] == "true" || dpdomaincheck == '1') && dpdomaincheck != '0' && (localStorage["global"] == "true" || (localStorage["global"] == "false" && (dpcloakindex != -1 || localStorage["newPages"] == "Cloak" || dpdomaincheck == '1')))) return 'true';
+	if ((storageCache["enable"] == "true" || dpdomaincheck == '1') && dpdomaincheck != '0' && (storageCache["global"] == "true" || (storageCache["global"] == "false" && (dpcloakindex != -1 || storageCache["newPages"] == "Cloak" || dpdomaincheck == '1')))) return 'true';
 	return 'false';
 }
+
 function domainCheck(domain) {
 	if (!domain) return '-1';
 	if (in_array(domain, whiteList) == '1') return '0';
 	if (in_array(domain, blackList) == '1') return '1';
 	return '-1';
 }
+
 function in_array(needle, haystack) {
 	if (!haystack || !needle) return false;
 	if (binarySearch(haystack, needle) != -1) return '1';
@@ -41,6 +61,7 @@ function in_array(needle, haystack) {
 	}
 	return false;
 }
+
 function binarySearch(list, item) {
     var min = 0;
     var max = list.length - 1;
@@ -67,6 +88,7 @@ function binarySearch(list, item) {
 	}
     return -1;
 }
+
 function extractDomainFromURL(url) {
 	if (!url) return "";
 	if (url.indexOf("://") != -1) url = url.substr(url.indexOf("://") + 3);
@@ -79,12 +101,14 @@ function extractDomainFromURL(url) {
 	if (url.indexOf(":") > 0) url = url.substr(0, url.indexOf(":"));
 	return url;
 }
-function domainHandler(domain,action) {
-	// Initialize local storage
-	if (typeof(localStorage['whiteList'])=='undefined') localStorage['whiteList'] = JSON.stringify([]);
-	if (typeof(localStorage['blackList'])=='undefined') localStorage['blackList'] = JSON.stringify([]);
-	var tempWhitelist = JSON.parse(localStorage['whiteList']);
-	var tempBlacklist = JSON.parse(localStorage['blackList']);
+
+async function domainHandler(domain, action) {
+	// Initialize storage
+	let whiteListData = await getStorageValue('whiteList', '[]');
+	let blackListData = await getStorageValue('blackList', '[]');
+	
+	var tempWhitelist = JSON.parse(whiteListData);
+	var tempBlacklist = JSON.parse(blackListData);
 	
 	// Remove domain from whitelist and blacklist
 	var pos = tempWhitelist.indexOf(domain);
@@ -103,122 +127,167 @@ function domainHandler(domain,action) {
 			break;
 	}
 	
-	localStorage['blackList'] = JSON.stringify(tempBlacklist);
-	localStorage['whiteList'] = JSON.stringify(tempWhitelist);
+	await setStorageValue('blackList', JSON.stringify(tempBlacklist));
+	await setStorageValue('whiteList', JSON.stringify(tempWhitelist));
 	blackList = tempBlacklist.sort();
 	whiteList = tempWhitelist.sort();
 	return false;
 }
+
 // ----- Options
-function optionExists(opt) {
-	return (typeof localStorage[opt] != "undefined");
+async function defaultOptionValue(opt, val) {
+	if (!optionExists(opt)) await setStorageValue(opt, val);
 }
-function defaultOptionValue(opt, val) {
-	if (!optionExists(opt)) localStorage[opt] = val;
-}
-function setDefaultOptions() {
-	defaultOptionValue("version", version);
-	defaultOptionValue("enable", "true");
-	defaultOptionValue("enableToggle", "true");
-	defaultOptionValue("hotkey", "CTRL F12");
-	defaultOptionValue("paranoidhotkey", "ALT P");
-	defaultOptionValue("global", "false");
-	defaultOptionValue("newPages", "Uncloak");
-	defaultOptionValue("sfwmode", "SFW");
-	defaultOptionValue("savedsfwmode", "");
-	defaultOptionValue("opacity1", "0.05");
-	defaultOptionValue("opacity2", "0.5");
-	defaultOptionValue("collapseimage", "false");
-	defaultOptionValue("showIcon", "true");
-	defaultOptionValue("iconType", "coffee");
-	defaultOptionValue("iconTitle", "Decreased Productivity");
-	defaultOptionValue("disableFavicons", "false");
-	defaultOptionValue("hidePageTitles", "false");
-	defaultOptionValue("pageTitleText", "Google Chrome");
-	defaultOptionValue("enableStickiness", "false");
-	defaultOptionValue("maxwidth", "0");
-	defaultOptionValue("maxheight", "0");
-	defaultOptionValue("showContext", "true");
-	defaultOptionValue("showUnderline", "true");
-	defaultOptionValue("removeBold", "false");
-	defaultOptionValue("showUpdateNotifications", "true");
-	defaultOptionValue("font", "Arial");
-	defaultOptionValue("customfont", "");
-	defaultOptionValue("fontsize", "12");
-	defaultOptionValue("s_bg", "FFFFFF");
-	defaultOptionValue("s_link", "000099");
-	defaultOptionValue("s_table", "cccccc");
-	defaultOptionValue("s_text", "000000");
-	defaultOptionValue("customcss", "");
-	// fix hotkey shortcut if in old format (if using + as separator instead of space)
-	if (localStorage["hotkey"].indexOf('+') != -1) {
-		localStorage["hotkey"] = localStorage["hotkey"].replace(/\+$/, "APLUSA").replace(/\+/g, " ").replace(/APLUSA/, "+");
+
+async function setDefaultOptions() {
+	await defaultOptionValue("version", version);
+	await defaultOptionValue("enable", "true");
+	await defaultOptionValue("enableToggle", "true");
+	await defaultOptionValue("hotkey", "CTRL F12");
+	await defaultOptionValue("paranoidhotkey", "ALT P");
+	await defaultOptionValue("global", "false");
+	await defaultOptionValue("newPages", "Uncloak");
+	await defaultOptionValue("sfwmode", "SFW");
+	await defaultOptionValue("savedsfwmode", "");
+	await defaultOptionValue("opacity1", "0.05");
+	await defaultOptionValue("opacity2", "0.5");
+	await defaultOptionValue("collapseimage", "false");
+	await defaultOptionValue("showIcon", "true");
+	await defaultOptionValue("iconType", "coffee");
+	await defaultOptionValue("iconTitle", "Decreased Productivity");
+	await defaultOptionValue("disableFavicons", "false");
+	await defaultOptionValue("hidePageTitles", "false");
+	await defaultOptionValue("pageTitleText", "Google Chrome");
+	await defaultOptionValue("enableStickiness", "false");
+	await defaultOptionValue("maxwidth", "0");
+	await defaultOptionValue("maxheight", "0");
+	await defaultOptionValue("showContext", "true");
+	await defaultOptionValue("showUnderline", "true");
+	await defaultOptionValue("removeBold", "false");
+	await defaultOptionValue("showUpdateNotifications", "true");
+	await defaultOptionValue("font", "Arial");
+	await defaultOptionValue("customfont", "");
+	await defaultOptionValue("fontsize", "12");
+	await defaultOptionValue("s_bg", "FFFFFF");
+	await defaultOptionValue("s_link", "000099");
+	await defaultOptionValue("s_table", "cccccc");
+	await defaultOptionValue("s_text", "000000");
+	await defaultOptionValue("customcss", "");
+	await defaultOptionValue("blackList", "[]");
+	await defaultOptionValue("whiteList", "[]");
+	
+	// fix hotkey shortcut if in old format
+	let hotkey = await getStorageValue("hotkey", "CTRL F12");
+	if (hotkey.indexOf('+') != -1) {
+		hotkey = hotkey.replace(/\+$/, "APLUSA").replace(/\+/g, " ").replace(/APLUSA/, "+");
+		await setStorageValue("hotkey", hotkey);
 	}
-	// delete old option if exists
-	if (optionExists("globalEnable"))
-		delete localStorage["globalEnable"];
-	// delete old option if exists
-	if (optionExists("style"))
-		delete localStorage["style"];
+	
 	// set SFW Level to SFW (for new change in v0.46.3)
-	if (localStorage["sfwmode"] == "true")
-		localStorage["sfwmode"] = "SFW";
-	if (!optionExists("blackList")) localStorage['blackList'] = JSON.stringify([]);
-	if (!optionExists("whiteList")) localStorage['whiteList'] = JSON.stringify([]);
-}
-// Context Menu
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("whitelistdomain"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 0);
-	if (localStorage["enable"] == "true") magician('false', tab.id);
-}});
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("blacklistdomain"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 1);
-	if (localStorage["enable"] == "true") magician('true', tab.id);
-}});
-chrome.contextMenus.create({"title": chrome.i18n.getMessage("removelist"), "contexts": ['browser_action','page_action'], "onclick": function(info, tab){
-	if (tab.url.substring(0, 4) != 'http') return;
-	domainHandler(extractDomainFromURL(tab.url), 2);
-	if (localStorage["enable"] == "true")  {
-		var flag = 'false';
-		if (localStorage['newPages'] == 'Cloak' || localStorage['global'] == 'true') flag = 'true';
-		magician(flag, tab.id);
+	let sfwmode = await getStorageValue("sfwmode", "SFW");
+	if (sfwmode == "true") {
+		await setStorageValue("sfwmode", "SFW");
 	}
-}});
+}
+
+// Context Menu - Updated for Manifest V3
+chrome.contextMenus.create({
+	"id": "whitelistdomain",
+	"title": chrome.i18n.getMessage("whitelistdomain"), 
+	"contexts": ['action']
+});
+
+chrome.contextMenus.create({
+	"id": "blacklistdomain",
+	"title": chrome.i18n.getMessage("blacklistdomain"), 
+	"contexts": ['action']
+});
+
+chrome.contextMenus.create({
+	"id": "removelist",
+	"title": chrome.i18n.getMessage("removelist"), 
+	"contexts": ['action']
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+	if (tab.url.substring(0, 4) != 'http') return;
+	
+	switch(info.menuItemId) {
+		case "whitelistdomain":
+			await domainHandler(extractDomainFromURL(tab.url), 0);
+			if (await getStorageValue("enable") == "true") magician('false', tab.id);
+			break;
+		case "blacklistdomain":
+			await domainHandler(extractDomainFromURL(tab.url), 1);
+			if (await getStorageValue("enable") == "true") magician('true', tab.id);
+			break;
+		case "removelist":
+			await domainHandler(extractDomainFromURL(tab.url), 2);
+			if (await getStorageValue("enable") == "true") {
+				var flag = 'false';
+				if (await getStorageValue('newPages') == 'Cloak' || await getStorageValue('global') == 'true') flag = 'true';
+				magician(flag, tab.id);
+			}
+			break;
+	}
+});
 
 // Called by clicking on the context menu item
-function newCloak(info, tab) {
-	// Enable cloaking (in case its been disabled) and open the link in a new tab
-	localStorage["enable"] = "true";
-	// If it's an image, load the "src" attribute
-	if (info.mediaType) chrome.tabs.create({'url': info.srcUrl}, function(tab){ cloakedTabs.push(tab.windowId+"|"+tab.id);recursiveCloak('true', localStorage["global"], tab.id); });
-	// Else, it's a normal link, so load the linkUrl.
-	else chrome.tabs.create({'url': info.linkUrl}, function(tab){ cloakedTabs.push(tab.windowId+"|"+tab.id);recursiveCloak('true', localStorage["global"], tab.id); });
+async function newCloak(info, tab) {
+	await setStorageValue("enable", "true");
+	if (info.mediaType) {
+		chrome.tabs.create({'url': info.srcUrl}, function(tab){ 
+			cloakedTabs.push(tab.windowId+"|"+tab.id);
+			recursiveCloak('true', storageCache["global"], tab.id); 
+		});
+	} else {
+		chrome.tabs.create({'url': info.linkUrl}, function(tab){ 
+			cloakedTabs.push(tab.windowId+"|"+tab.id);
+			recursiveCloak('true', storageCache["global"], tab.id); 
+		});
+	}
 }
+
 // Add context menu item that shows only if you right-click on links/images.
-function dpContext() {
-	if (localStorage["showContext"] == 'true' && !contextLoaded) {
-		chrome.contextMenus.create({"title": chrome.i18n.getMessage("opensafely"), "contexts": ['link', 'image'], "onclick": function(info, tab){newCloak(info, tab);}});
+async function dpContext() {
+	if (await getStorageValue("showContext") == 'true' && !contextLoaded) {
+		chrome.contextMenus.create({
+			"id": "opensafely",
+			"title": chrome.i18n.getMessage("opensafely"), 
+			"contexts": ['link', 'image']
+		});
 		contextLoaded = true;
 	}
 }
+
 // ----- Main Functions
 function checkChrome(url) {
 	if (url.substring(0, 6) == 'chrome') return true;
 	return false;
 }
-function hotkeyChange() {
+
+async function hotkeyChange() {
 	chrome.windows.getAll({"populate":true}, function(windows) {
 		windows.map(function(window) {
 			window.tabs.map(function(tab) {
-				if (!checkChrome(tab.url)) chrome.tabs.executeScript(tab.id, {code: 'hotkeySet("'+localStorage["enableToggle"]+'","'+localStorage["hotkey"]+'","'+localStorage["paranoidhotkey"]+'");', allFrames: true});
+				if (!checkChrome(tab.url)) {
+					chrome.scripting.executeScript({
+						target: { tabId: tab.id, allFrames: true },
+						func: function(enableToggle, hotkey, paranoidhotkey) {
+							if (typeof hotkeySet === 'function') {
+								hotkeySet(enableToggle, hotkey, paranoidhotkey);
+							}
+						},
+						args: [storageCache["enableToggle"], storageCache["hotkey"], storageCache["paranoidhotkey"]]
+					});
+				}
 			});
 		});
 	});
 }
-function optionsSaveTrigger(prevglob, newglob) {
-	var enable = localStorage["enable"];
+
+async function optionsSaveTrigger(prevglob, newglob) {
+	var enable = await getStorageValue("enable");
 	var global = newglob;
 	if (prevglob == 'true' && newglob == 'false') {
 		global = 'true';
@@ -231,6 +300,7 @@ function optionsSaveTrigger(prevglob, newglob) {
 		if (enable == 'false') cloakedTabs = [];
 	} else recursiveCloak(enable, global);
 }
+
 function recursiveCloak(enable, global, tabId) {
 	if (global == 'true') {
 		chrome.windows.getAll({"populate":true}, function(windows) {
@@ -261,39 +331,90 @@ function recursiveCloak(enable, global, tabId) {
 		if (tabId) magician(enable, tabId);
 	}
 }
+
 function magician(enable, tabId) {
 	if (enable == 'true') {
-		if (localStorage["disableFavicons"] == 'true' && localStorage["hidePageTitles"] == 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconblank();replaceTitle("'+localStorage["pageTitleText"]+'");titleBind("'+localStorage["pageTitleText"]+'");', allFrames: true});
-		else if (localStorage["disableFavicons"] == 'true' && localStorage["hidePageTitles"] != 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconblank();titleRestore();', allFrames: true});
-		else if (localStorage["disableFavicons"] != 'true' && localStorage["hidePageTitles"] == 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconrestore();replaceTitle("'+localStorage["pageTitleText"]+'");titleBind("'+localStorage["pageTitleText"]+'");', allFrames: true});
-		else if (localStorage["disableFavicons"] != 'true' && localStorage["hidePageTitles"] != 'true')
-			chrome.tabs.executeScript(tabId, {code: 'init();faviconrestore();titleRestore();', allFrames: true});
-	} else chrome.tabs.executeScript(tabId, {code: "removeCss();", allFrames: true});
-	if (localStorage["showIcon"] == 'true') {
-		if (enable == 'true') chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabId});
-		else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabId});
-		chrome.pageAction.setTitle({title: dptitle, tabId: tabId});
-		chrome.pageAction.show(tabId);
-	} else chrome.pageAction.hide(tabId);
+		if (storageCache["disableFavicons"] == 'true' && storageCache["hidePageTitles"] == 'true') {
+			chrome.scripting.executeScript({
+				target: { tabId: tabId, allFrames: true },
+				func: function(pageTitleText) {
+					if (typeof init === 'function') init();
+					if (typeof faviconblank === 'function') faviconblank();
+					if (typeof replaceTitle === 'function') replaceTitle(pageTitleText);
+					if (typeof titleBind === 'function') titleBind(pageTitleText);
+				},
+				args: [storageCache["pageTitleText"]]
+			});
+		} else if (storageCache["disableFavicons"] == 'true' && storageCache["hidePageTitles"] != 'true') {
+			chrome.scripting.executeScript({
+				target: { tabId: tabId, allFrames: true },
+				func: function() {
+					if (typeof init === 'function') init();
+					if (typeof faviconblank === 'function') faviconblank();
+					if (typeof titleRestore === 'function') titleRestore();
+				}
+			});
+		} else if (storageCache["disableFavicons"] != 'true' && storageCache["hidePageTitles"] == 'true') {
+			chrome.scripting.executeScript({
+				target: { tabId: tabId, allFrames: true },
+				func: function(pageTitleText) {
+					if (typeof init === 'function') init();
+					if (typeof faviconrestore === 'function') faviconrestore();
+					if (typeof replaceTitle === 'function') replaceTitle(pageTitleText);
+					if (typeof titleBind === 'function') titleBind(pageTitleText);
+				},
+				args: [storageCache["pageTitleText"]]
+			});
+		} else if (storageCache["disableFavicons"] != 'true' && storageCache["hidePageTitles"] != 'true') {
+			chrome.scripting.executeScript({
+				target: { tabId: tabId, allFrames: true },
+				func: function() {
+					if (typeof init === 'function') init();
+					if (typeof faviconrestore === 'function') faviconrestore();
+					if (typeof titleRestore === 'function') titleRestore();
+				}
+			});
+		}
+	} else {
+		chrome.scripting.executeScript({
+			target: { tabId: tabId, allFrames: true },
+			func: function() {
+				if (typeof removeCss === 'function') removeCss();
+			}
+		});
+	}
+	
+	if (storageCache["showIcon"] == 'true') {
+		if (enable == 'true') {
+			chrome.action.setIcon({
+				path: chrome.runtime.getURL("img/addressicon/"+dpicon+".png"), 
+				tabId: tabId
+			});
+		} else {
+			chrome.action.setIcon({
+				path: chrome.runtime.getURL("img/addressicon/"+dpicon+"-disabled.png"), 
+				tabId: tabId
+			});
+		}
+		chrome.action.setTitle({title: dptitle, tabId: tabId});
+	}
 }
-function dpHandle(tab) {
+
+async function dpHandle(tab) {
 	if (checkChrome(tab.url)) return;
-	if (localStorage["global"] == "true" && domainCheck(extractDomainFromURL(tab.url)) != 1) {
-		if (localStorage["enable"] == "true") {
+	if (await getStorageValue("global") == "true" && domainCheck(extractDomainFromURL(tab.url)) != 1) {
+		if (await getStorageValue("enable") == "true") {
 			recursiveCloak('false', 'true');
-			localStorage["enable"] = "false";
+			await setStorageValue("enable", "false");
 		} else {
 			recursiveCloak('true', 'true');
-			localStorage["enable"] = "true";
+			await setStorageValue("enable", "true");
 		}
 	} else {
 		var dpTabId = tab.windowId+"|"+tab.id;
 		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
 		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
-		localStorage["enable"] = "true";
+		await setStorageValue("enable", "true");
 		if (dpcloakindex != -1) {
 			magician('false', tab.id);
 			if (dpuncloakindex == -1) uncloakedTabs.push(dpTabId);
@@ -305,46 +426,64 @@ function dpHandle(tab) {
 		}
 	}
 }
+
 function setDPIcon() {
-	dpicon = localStorage["iconType"];
-	dptitle = localStorage["iconTitle"];
+	dpicon = storageCache["iconType"];
+	dptitle = storageCache["iconTitle"];
 	chrome.windows.getAll({"populate":true}, function(windows) {
 		windows.map(function(window) {
 			window.tabs.map(function(tab) {
-				if (cloakedTabs.indexOf(tab.windowId+"|"+tab.id) != -1) chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tab.id});
-				else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tab.id});
-				chrome.pageAction.setTitle({title: dptitle, tabId: tab.id});
-				if (localStorage["showIcon"] == 'true') chrome.pageAction.show(tab.id);
-				else chrome.pageAction.hide(tab.id);
+				if (cloakedTabs.indexOf(tab.windowId+"|"+tab.id) != -1) {
+					chrome.action.setIcon({
+						path: chrome.runtime.getURL("img/addressicon/"+dpicon+".png"), 
+						tabId: tab.id
+					});
+				} else {
+					chrome.action.setIcon({
+						path: chrome.runtime.getURL("img/addressicon/"+dpicon+"-disabled.png"), 
+						tabId: tab.id
+					});
+				}
+				chrome.action.setTitle({title: dptitle, tabId: tab.id});
 			});
 		});
 	});
 }
-function initLists() {
-	blackList = JSON.parse(localStorage['blackList']).sort();
-	whiteList = JSON.parse(localStorage['whiteList']).sort();	
+
+async function initLists() {
+	blackList = JSON.parse(await getStorageValue('blackList', '[]')).sort();
+	whiteList = JSON.parse(await getStorageValue('whiteList', '[]')).sort();	
 }
+
 // ----- Request library to support content script communication
-chrome.tabs.onUpdated.addListener(function(tabid, changeinfo, tab) {
+chrome.tabs.onUpdated.addListener(async function(tabid, changeinfo, tab) {
 	if (changeinfo.status == "loading") {
 		var dpTabId = tab.windowId+"|"+tabid;
 		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
 		var enable = enabled(tab, dpcloakindex);
-		if (localStorage["showIcon"] == "true") {
-			if (enable == "true") chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+".png", tabId: tabid});
-			else chrome.pageAction.setIcon({path: "img/addressicon/"+dpicon+"-disabled.png", tabId: tabid});
-			chrome.pageAction.setTitle({title: dptitle, tabId: tabid});
-			chrome.pageAction.show(tabid);
-		} else chrome.pageAction.hide(tabid);
+		if (await getStorageValue("showIcon") == "true") {
+			if (enable == "true") {
+				chrome.action.setIcon({
+					path: chrome.runtime.getURL("img/addressicon/"+dpicon+".png"), 
+					tabId: tabid
+				});
+			} else {
+				chrome.action.setIcon({
+					path: chrome.runtime.getURL("img/addressicon/"+dpicon+"-disabled.png"), 
+					tabId: tabid
+				});
+			}
+			chrome.action.setTitle({title: dptitle, tabId: tabid});
+		}
 		if (checkChrome(tab.url)) return;
 		var dpuncloakindex = uncloakedTabs.indexOf(dpTabId);
 		if (enable == "true") {
 			magician('true', tabid);
-			if (localStorage["global"] == "false" && localStorage["enable"] == "false") localStorage["enable"] = "true";
+			if (await getStorageValue("global") == "false" && await getStorageValue("enable") == "false") await setStorageValue("enable", "true");
 			if (dpcloakindex == -1) cloakedTabs.push(dpTabId);
 			if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 		} else {
-			if (localStorage["enableStickiness"] == "true") {
+			if (await getStorageValue("enableStickiness") == "true") {
 				if (tab.openerTabId) {
 					if (cloakedTabs.indexOf(tab.windowId+"|"+tab.openerTabId) != -1 && dpuncloakindex == -1) {
 						if (domainCheck(extractDomainFromURL(tab.url)) != '0') {
@@ -372,6 +511,7 @@ chrome.tabs.onUpdated.addListener(function(tabid, changeinfo, tab) {
 		}
 	}
 });	
+
 chrome.tabs.onRemoved.addListener(function(tabid, windowInfo) {
 	var dpTabId = windowInfo.windowId+"|"+tabid;
 	var dpcloakindex = cloakedTabs.indexOf(dpTabId);
@@ -379,19 +519,29 @@ chrome.tabs.onRemoved.addListener(function(tabid, windowInfo) {
 	if (dpcloakindex != -1) cloakedTabs.splice(dpcloakindex, 1);
 	if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 });
+
 var requestDispatchTable = {
 	"get-enabled": function(request, sender, sendResponse) {
 		var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
 		var dpcloakindex = cloakedTabs.indexOf(dpTabId);
 		var enable = enabled(sender.tab, dpcloakindex);
 		if (enable == 'true' && dpcloakindex == -1) cloakedTabs.push(dpTabId);
-		sendResponse({enable: enable, background: localStorage["s_bg"], favicon: localStorage["disableFavicons"], hidePageTitles: localStorage["hidePageTitles"], pageTitleText: localStorage["pageTitleText"], enableToggle: localStorage["enableToggle"], hotkey: localStorage["hotkey"], paranoidhotkey: localStorage["paranoidhotkey"]});
+		sendResponse({
+			enable: enable, 
+			background: storageCache["s_bg"], 
+			favicon: storageCache["disableFavicons"], 
+			hidePageTitles: storageCache["hidePageTitles"], 
+			pageTitleText: storageCache["pageTitleText"], 
+			enableToggle: storageCache["enableToggle"], 
+			hotkey: storageCache["hotkey"], 
+			paranoidhotkey: storageCache["paranoidhotkey"]
+		});
 	},
-	"toggle": function(request, sender, sendResponse) {
-		if (localStorage["savedsfwmode"] != "") {
-			localStorage["sfwmode"] = localStorage["savedsfwmode"];
-			localStorage["savedsfwmode"] = "";
-			if (localStorage["global"] == "true") recursiveCloak('true', 'true');
+	"toggle": async function(request, sender, sendResponse) {
+		if (await getStorageValue("savedsfwmode") != "") {
+			await setStorageValue("sfwmode", await getStorageValue("savedsfwmode"));
+			await setStorageValue("savedsfwmode", "");
+			if (await getStorageValue("global") == "true") recursiveCloak('true', 'true');
 			else {
 				magician('true', sender.tab.id);
 				var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
@@ -399,16 +549,16 @@ var requestDispatchTable = {
 				if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 				if (cloakedTabs.indexOf(dpTabId) == -1) cloakedTabs.push(dpTabId);
 			}
-			localStorage["enable"] = "true";
+			await setStorageValue("enable", "true");
 		} else {
 			dpHandle(sender.tab);
 		}
 	},
-	"toggleparanoid": function(request, sender, sendResponse) {
-		if (localStorage["savedsfwmode"] == "") {
-			localStorage["savedsfwmode"] = localStorage["sfwmode"];
-			localStorage["sfwmode"] = "Paranoid";
-			if (localStorage["global"] == "true") recursiveCloak('true', 'true');
+	"toggleparanoid": async function(request, sender, sendResponse) {
+		if (await getStorageValue("savedsfwmode") == "") {
+			await setStorageValue("savedsfwmode", await getStorageValue("sfwmode"));
+			await setStorageValue("sfwmode", "Paranoid");
+			if (await getStorageValue("global") == "true") recursiveCloak('true', 'true');
 			else {
 				magician('true', sender.tab.id);
 				var dpTabId = sender.tab.windowId+"|"+sender.tab.id;
@@ -416,42 +566,101 @@ var requestDispatchTable = {
 				if (dpuncloakindex != -1) uncloakedTabs.splice(dpuncloakindex, 1);
 				if (cloakedTabs.indexOf(dpTabId) == -1) cloakedTabs.push(dpTabId);
 			}
-			localStorage["enable"] = "true";
+			await setStorageValue("enable", "true");
 		} else {
-			localStorage["sfwmode"] = localStorage["savedsfwmode"];
-			localStorage["savedsfwmode"] = "";
+			await setStorageValue("sfwmode", await getStorageValue("savedsfwmode"));
+			await setStorageValue("savedsfwmode", "");
 			dpHandle(sender.tab);
 		}
 	},
 	"get-settings": function(request, sender, sendResponse) {
 		var enable, fontface;
-		if (localStorage["font"] == '-Custom-') {
-			if (localStorage["customfont"]) fontface = localStorage["customfont"];
+		if (storageCache["font"] == '-Custom-') {
+			if (storageCache["customfont"]) fontface = storageCache["customfont"];
 			else fontface = 'Arial';
-		} else fontface = localStorage["font"];
-		if (localStorage["global"] == "false") enable = 'true';
+		} else fontface = storageCache["font"];
+		if (storageCache["global"] == "false") enable = 'true';
 		else enable = enabled(sender.tab);
-		sendResponse({enable: enable, sfwmode: localStorage["sfwmode"], font: fontface, fontsize: localStorage["fontsize"], underline: localStorage["showUnderline"], background: localStorage["s_bg"], text: localStorage["s_text"], table: localStorage["s_table"], link: localStorage["s_link"], bold: localStorage["removeBold"], opacity1: localStorage["opacity1"], opacity2: localStorage["opacity2"], collapseimage: localStorage["collapseimage"], maxheight: localStorage["maxheight"], maxwidth: localStorage["maxwidth"], customcss: localStorage["customcss"]});
+		sendResponse({
+			enable: enable, 
+			sfwmode: storageCache["sfwmode"], 
+			font: fontface, 
+			fontsize: storageCache["fontsize"], 
+			underline: storageCache["showUnderline"], 
+			background: storageCache["s_bg"], 
+			text: storageCache["s_text"], 
+			table: storageCache["s_table"], 
+			link: storageCache["s_link"], 
+			bold: storageCache["removeBold"], 
+			opacity1: storageCache["opacity1"], 
+			opacity2: storageCache["opacity2"], 
+			collapseimage: storageCache["collapseimage"], 
+			maxheight: storageCache["maxheight"], 
+			maxwidth: storageCache["maxwidth"], 
+			customcss: storageCache["customcss"]
+		});
 	}
 }
+
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
-	if (request.reqtype in requestDispatchTable) requestDispatchTable[request.reqtype](request, sender, sendResponse);
-	else sendResponse({});
+	if (request.reqtype in requestDispatchTable) {
+		const handler = requestDispatchTable[request.reqtype];
+		if (handler.constructor.name === 'AsyncFunction') {
+			handler(request, sender, sendResponse);
+			return true; // Keep message channel open for async response
+		} else {
+			handler(request, sender, sendResponse);
+		}
+	} else {
+		sendResponse({});
+	}
 });
-// ----- If page action icon is clicked, either enable or disable the cloak
-chrome.pageAction.onClicked.addListener(function(tab) {
+
+// ----- If action icon is clicked, either enable or disable the cloak
+chrome.action.onClicked.addListener(function(tab) {
 	dpHandle(tab);
 });
-// Execute
-setDefaultOptions();
-// save blacklist and whitelist in global variable for faster lookups
-initLists();
-setDPIcon();
-dpContext();
-if ((!optionExists("version") || localStorage["version"] != version) && localStorage["showUpdateNotifications"] == 'true') {
-	//chrome.tabs.create({ url: chrome.extension.getURL('updated.html'), selected: false }); - minor update so don't show update page
-	localStorage["version"] = version;
+
+// Initialize storage cache
+async function initializeStorage() {
+	const keys = [
+		"version", "enable", "enableToggle", "hotkey", "paranoidhotkey", "global", 
+		"newPages", "sfwmode", "savedsfwmode", "opacity1", "opacity2", "collapseimage", 
+		"showIcon", "iconType", "iconTitle", "disableFavicons", "hidePageTitles", 
+		"pageTitleText", "enableStickiness", "maxwidth", "maxheight", "showContext", 
+		"showUnderline", "removeBold", "showUpdateNotifications", "font", "customfont", 
+		"fontsize", "s_bg", "s_link", "s_table", "s_text", "customcss", "blackList", "whiteList"
+	];
+	
+	const result = await chrome.storage.local.get(keys);
+	for (const key of keys) {
+		if (result[key] !== undefined) {
+			storageCache[key] = result[key];
+		}
+	}
 }
+
+// Execute
+chrome.runtime.onStartup.addListener(async () => {
+	await initializeStorage();
+	await setDefaultOptions();
+	await initLists();
+	setDPIcon();
+	await dpContext();
+});
+
+chrome.runtime.onInstalled.addListener(async () => {
+	await initializeStorage();
+	await setDefaultOptions();
+	await initLists();
+	setDPIcon();
+	await dpContext();
+	
+	if ((!optionExists("version") || await getStorageValue("version") != version) && await getStorageValue("showUpdateNotifications") == 'true') {
+		await setStorageValue("version", version);
+	}
+});
+
 chrome.runtime.onUpdateAvailable.addListener(function (details) {
 	// an update is available, but wait until user restarts their browser as to not disrupt their current session and cloaked tabs.
 });

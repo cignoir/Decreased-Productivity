@@ -1,15 +1,10 @@
 {
-   "background": {
-      "scripts": [ "js/background.js" ]
-   },
-   "content_scripts": [ {
-      "all_frames": true,
-      "js": [ "js/jquery.js", "js/keypress-2.1.4.min.js", "js/dp.js" ],
-      "matches": [ "http://*/*", "https://*/*" ],
-      "run_at": "document_start"
-   } ],
-   "default_locale": "en",
+   "manifest_version": 3,
+   "name": "Decreased Productivity",
+   "version": "0.46.56.12",
    "description": "Discreetly surf the web! Control exactly how you want web pages to look like.",
+   "default_locale": "en",
+   "minimum_chrome_version": "88",
    "icons": {
       "128": "img/icon128.png",
       "16": "img/icon16.png",
@@ -17,14 +12,20 @@
       "32": "img/icon32.png",
       "48": "img/icon48.png"
    },
-   "manifest_version": 2,
-   "minimum_chrome_version": "6",
-   "name": "Decreased Productivity",
-   "options_page": "options.html",
-   "page_action": {
+   "background": {
+      "service_worker": "js/background.js"
+   },
+   "content_scripts": [ {
+      "all_frames": true,
+      "js": [ "js/jquery.js", "js/keypress-2.1.4.min.js", "js/dp.js" ],
+      "matches": [ "http://*/*", "https://*/*" ],
+      "run_at": "document_start"
+   } ],
+   "action": {
       "default_icon": "img/addressicon/coffee.png",
       "default_title": "Decreased Productivity"
    },
-   "permissions": [ "http://*/*", "https://*/*", "contextMenus", "tabs" ],
-   "version": "0.46.56.12"
+   "options_page": "options.html",
+   "permissions": [ "contextMenus", "tabs", "storage", "scripting" ],
+   "host_permissions": [ "http://*/*", "https://*/*" ]
 }
